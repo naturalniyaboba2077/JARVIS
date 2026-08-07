@@ -139,6 +139,10 @@ check("piper НЕ используется как fallback при TTS_ENGINE=edg
       'if engine not in {"edge", "piper"} and _piper_available():' in src)
 check("кэш TTS помечен текущим движком (а не всегда piper)",
       "engine = effective" in src)
+check("ключ кэша учитывает голос, а не только движок",
+      'f"{engine}:{voice_id}:{phrase}"' in src and "voice_id = " in src)
+check("в шаблоне конфига голос по умолчанию — низкий мужской (ruslan, ~114 Гц)",
+      '"PIPER_VOICE": "ruslan"' in Path("jarvis_config.example.json").read_text(encoding="utf-8"))
 check("_set_done_speaking() не вызывает сам себя",
       "_set_done_speaking()" not in
       src.split("def _set_done_speaking():")[1].split("\ndef ")[0])
@@ -767,6 +771,42 @@ check("панель содержит авторизацию Telegram кодом 
       "telegram_send_code" in ui_src and "telegram_sign_in" in ui_src and
       'id="telegramPassword"' in ui_src)
 check("Telegram session исключена из Git", "telegram_data/" in Path(".gitignore").read_text(encoding="utf-8"))
+
+
+section("BUG 20: Джарвис не всегда отзывался на своё имя")
+for _tok in ["джарез", "джаммитс", "джанес", "жарвес", "джарвис"]:
+    check(f"ловит искажение имени: {_tok!r}", jarvis.contains_wake_word(_tok))
+check("реальный промах из логов: 'Джарез. Включи музыку.'",
+      jarvis.contains_wake_word("Джарез. Включи музыку.") and
+      "включи музыку" in jarvis.strip_wake_word("Джарез. Включи музыку."))
+check("реальный промах из логов: 'Джаммитс, открой Spotify'",
+      jarvis.contains_wake_word("Джаммитс, открой Spotify"))
+
+for _w in ["держись", "договаривались", "дарим", "жарим", "ужаристы",
+           "древеса", "дагарки", "джаз", "джакузи", "дарвин", "давись"]:
+    check(f"не срабатывает на обычное слово: {_w!r}", not jarvis.contains_wake_word(_w))
+
+check("общий фаззи-порог не тронут (0.72)", jarvis.WAKE_FUZZY_THRESHOLD == 0.72)
+check("смягчённый порог только для начала 'джа'/'жарв'",
+      jarvis.WAKE_ONSET_RE.match("джарез") is not None and
+      jarvis.WAKE_ONSET_RE.match("держись") is None)
+check("короткие токены под смягчённый порог не попадают",
+      jarvis.WAKE_ONSET_MIN_LEN >= 5)
+
+check("во время своей речи Джарвис слышит обращение и обрывает ответ",
+      "_interrupt_event.set()" in src and "speaking_now" in src)
+check("длинное эхо во время речи не транскрибируется",
+      "BARGE_IN_MAX_AUDIO" in src and jarvis.BARGE_IN_MAX_AUDIO > 0)
+
+_saved_spoken = jarvis._last_spoken_text
+try:
+    jarvis._last_spoken_text = "Открываю браузер, сэр."
+    check("эхо собственной фразы распознаётся",
+          jarvis._is_echo_of_last_spoken("открываю браузер сэр"))
+    check("нормальная команда не считается эхом",
+          not jarvis._is_echo_of_last_spoken("поставь таймер на десять минут"))
+finally:
+    jarvis._last_spoken_text = _saved_spoken
 
 
 section("Статический анализ: файл импортируется и парсится")

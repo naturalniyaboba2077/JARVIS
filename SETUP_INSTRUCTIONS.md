@@ -43,7 +43,7 @@ OpenRouter Настоящий файл гит игнорирует Переме�
   "JARVIS_WAKE_COMMAND_WINDOW": "10.0",
   "JARVIS_PHRASE_TIME_LIMIT": "45.0",
   "TTS_ENGINE": "auto",
-  "PIPER_VOICE": "dmitri",
+  "PIPER_VOICE": "ruslan",
   "JARVIS_FOLLOWUP_MODE": "strict",
   "JARVIS_UI": "on",
   "JARVIS_OVERLAY": "on"
@@ -103,7 +103,10 @@ powershell -ExecutionPolicy Bypass -File .\install_shortcut.ps1
   он не будет говорить "Слушаю" поверх начала твоей следующей фразы
 - `JARVIS_PHRASE_TIME_LIMIT=45` — чтобы можно было диктовать длинное, вплоть до кода
 - После ответа 15 секунд можно продолжать без слова "Джарвис"
-- Голос Piper выбирается через `PIPER_VOICE`: `dmitri`, `ruslan`, `denis`, `irina`
+- Голос Piper выбирается через `PIPER_VOICE`: `ruslan`, `denis`, `dmitri`, `irina`
+  По умолчанию стоит `ruslan` — он самый низкий из мужских: основной тон около
+  114 Гц против 151 у `denis` и 188 у `dmitri` (мужской диапазон — 85–180 Гц)
+- Темп речи меняется через `PIPER_LENGTH_SCALE`: больше единицы — медленнее
 
 ## Про безопасность
 

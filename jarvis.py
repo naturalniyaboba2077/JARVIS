@@ -235,6 +235,10 @@ def _pythonw_exe() -> str:
 conversation_history = []
 MAX_HISTORY = 4
 
+# Persist the short-term dialogue across restarts. Off by default: the session
+# file is personal data, so it is opt-in via config/env.
+SESSION_MEMORY = os.getenv("SESSION_MEMORY", "off").strip().lower() in ("on", "1", "true", "yes")
+
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -252,19 +256,39 @@ _is_speaking = False
 _speaking_cooldown_until = 0.0
 _recognizer = None
 _interrupt_event = threading.Event()
+_threshold_before_speech = None
+
+
+# начали говорить — запоминаем порог микрофона, чтобы наш голос его не сбил
+def _mark_speaking():
+    """Enter the speaking state and remember the mic threshold from before it."""
+    global _is_speaking, _threshold_before_speech
+    if not _is_speaking and _recognizer is not None:
+        _threshold_before_speech = _recognizer.energy_threshold
+    _is_speaking = True
+    # Звук пошёл — синтез уже позади, подпись под шаром должна это показывать.
+    ui_sub("говорю…")
 
 
 # закончили говорить — ненадолго глушим микрофон, чтобы не слышать себя
 def _set_done_speaking():
     """Mark TTS as finished, start the mic cooldown, and open the follow-up window."""
     global _is_speaking, _speaking_cooldown_until, _wake_active_until
+    global _threshold_before_speech
     _is_speaking = False
     _speaking_cooldown_until = time.time() + SPEAK_COOLDOWN
     _wake_active_until = (time.time() + FOLLOWUP_WINDOW) if FOLLOWUP_MODE != "off" else 0.0
-    if _recognizer is not None and _recognizer.energy_threshold > 1200:
-        _recognizer.energy_threshold = 1200
-        jarvis_logger.debug("[SPEAK] energy_threshold сброшен до 1200 после TTS")
-    jarvis_logger.debug(f"[SPEAK] закончил → cooldown 1.2 с, "
+    # Пока Джарвис говорил, его собственный голос задирал порог микрофона через
+    # dynamic_energy_threshold. Возвращаем то значение, что было до речи, иначе
+    # он глохнет к пользователю после каждого своего ответа.
+    if _recognizer is not None and _threshold_before_speech is not None:
+        _recognizer.energy_threshold = min(_threshold_before_speech, 1500)
+        jarvis_logger.debug(
+            f"[SPEAK] порог микрофона восстановлен: {_recognizer.energy_threshold:.0f}")
+    _threshold_before_speech = None
+    ui_state("idle")
+    ui_sub("")   # вернуть подпись по умолчанию, даже если состояние не менялось
+    jarvis_logger.debug(f"[SPEAK] закончил → cooldown {SPEAK_COOLDOWN:.1f} с, "
                         f"окно продолжения {FOLLOWUP_WINDOW:.0f} с")
 
 
@@ -564,11 +588,27 @@ WAKE_VARIANT_RE = re.compile(
 )
 WAKE_FUZZY_THRESHOLD = 0.72
 
+# Whisper коверкает имя по-разному, но почти всегда сохраняет характерное начало:
+# «Джарез», «Джаммитс», «Джанес», «Жарвес» — всё это реальные пропущенные обращения
+# из логов, они не дотягивали до 0.72 и Джарвис молчал. А обычные слова, которые
+# случайно похожи целиком («держись», «договаривались», «дарим», «жарим»,
+# «ужаристы»), начинаются иначе. Поэтому порог опускаем только для токенов с таким
+# началом — общий порог 0.72 при этом не трогаем, иначе полезет фоновая речь.
+WAKE_ONSET_RE = re.compile(r"^(?:джа|жарв)", re.UNICODE)
+WAKE_ONSET_THRESHOLD = 0.60
+WAKE_ONSET_MIN_LEN = 5
+
 WAKE_BLOCKLIST = frozenset({"дарвин", "давись"})
 
 PAUSE_THRESHOLD = float(os.getenv("JARVIS_PAUSE_THRESHOLD", "2.6"))
 
 SPEAK_COOLDOWN = float(os.getenv("JARVIS_SPEAK_COOLDOWN", "1.5"))
+
+# Пока Джарвис говорит, микрофон слышит в основном его самого. Но на своё имя он
+# обязан отзываться даже посреди собственной фразы, поэтому короткие реплики в это
+# время всё-таки распознаются и проверяются на обращение. Длинные — это его же
+# голос из колонок, их отбрасываем не тратя GPU.
+BARGE_IN_MAX_AUDIO = float(os.getenv("JARVIS_BARGE_IN_MAX_AUDIO", "6.0"))
 
 WAKE_COMMAND_WINDOW = float(os.getenv("JARVIS_WAKE_COMMAND_WINDOW", "10.0"))
 
@@ -593,6 +633,22 @@ _WHISPER_GHOST_RE = re.compile(
 )
 
 
+# похоже ли услышанное на эхо того, что Джарвис только что сказал сам
+def _is_echo_of_last_spoken(t: str) -> bool:
+    """True if the heard text looks like Jarvis's own last reply coming back."""
+    if not _last_spoken_text or not t:
+        return False
+    heard = re.sub(r'\W+', ' ', t, flags=re.UNICODE).strip()
+    spoken = re.sub(r'\W+', ' ', _last_spoken_text.lower(), flags=re.UNICODE).strip()
+    if not heard or not spoken:
+        return False
+    ratio = SequenceMatcher(None, heard, spoken).ratio()
+    heard_words = set(heard.split())
+    spoken_words = set(spoken.split())
+    overlap = len(heard_words & spoken_words) / max(1, len(heard_words))
+    return ratio >= 0.58 or (len(heard_words) >= 3 and overlap >= 0.72)
+
+
 def _is_stray_speech(text: str) -> bool:
     """True if this looks like speech NOT meant for Jarvis (or STT noise).
 
@@ -612,16 +668,8 @@ def _is_stray_speech(text: str) -> bool:
         return True
     if len(t) <= 2:
         return True
-    if _last_spoken_text:
-        heard = re.sub(r'\W+', ' ', t, flags=re.UNICODE).strip()
-        spoken = re.sub(r'\W+', ' ', _last_spoken_text.lower(), flags=re.UNICODE).strip()
-        if heard and spoken:
-            ratio = SequenceMatcher(None, heard, spoken).ratio()
-            heard_words = set(heard.split())
-            spoken_words = set(spoken.split())
-            overlap = len(heard_words & spoken_words) / max(1, len(heard_words))
-            if ratio >= 0.58 or (len(heard_words) >= 3 and overlap >= 0.72):
-                return True
+    if _is_echo_of_last_spoken(t):
+        return True
     if FOLLOWUP_MODE == "strict":
         if not re.search(
             r'\b(открой|запусти|включи|выключи|покажи|скажи|расскажи|объясни|'
@@ -772,9 +820,13 @@ def prewarm_tts_cache():
     except Exception:
         return
     engine = effective
+    # В ключ входит не только движок, но и конкретный голос: иначе после смены
+    # PIPER_VOICE готовые фразы продолжали бы играть старым голосом, а остальной
+    # ответ — новым. Это тот самый баг «два голоса в одном ответе».
+    voice_id = PIPER_MODEL_PATH.stem if engine == "piper" else EDGE_VOICE
     for phrase in INSTANT_PHRASES:
         import hashlib
-        h = hashlib.md5(f"{engine}:{phrase}".encode("utf-8")).hexdigest()[:12]
+        h = hashlib.md5(f"{engine}:{voice_id}:{phrase}".encode("utf-8")).hexdigest()[:12]
         existing = _TTS_CACHE_DIR / f"{h}.{_cache_ext()}"
         if existing.exists():
             _TTS_INSTANT_CACHE[phrase] = str(existing)
@@ -926,13 +978,12 @@ def _playback_pump(env, fps: int = 60) -> bool:
 
 def _play_cached_file(path: str) -> bool:
     """Play a pre-generated cache file instantly through pygame."""
-    global _is_speaking
     try:
         if not pygame.mixer.get_init():
             pygame.mixer.init()
         pygame.mixer.music.load(path)
         _interrupt_event.clear()
-        _is_speaking = True
+        _mark_speaking()
         env = None
         if OVERLAY_ENABLED and path.endswith(".wav") and _main_window_minimized():
             try:
@@ -1200,7 +1251,6 @@ def speak(text: str):
     """Speak text aloud. Interruptible — stops instantly on barge-in."""
     global _last_spoken_text
     _last_spoken_text = (text or "").strip()
-    global _is_speaking
     print(f"Jarvis: {text}")
     jarvis_logger.info(f"[SPEAK] {text!r}")
 
@@ -1218,7 +1268,7 @@ def speak(text: str):
         data, suffix = tts_to_bytes(text)
         if data:
             _interrupt_event.clear()
-            _is_speaking = True
+            _mark_speaking()
             _play_audio_bytes(data, suffix)
             _set_done_speaking()
             return
@@ -1235,7 +1285,7 @@ def speak(text: str):
         pygame.mixer.music.load(audio_file)
 
         _interrupt_event.clear()
-        _is_speaking = True
+        _mark_speaking()
 
         pygame.mixer.music.play()
 
@@ -1267,7 +1317,7 @@ def speak_streaming(sentences_iter):
     - Plays the previous sentence's audio while the next is being generated
     - First word starts playing in ~300-500ms instead of waiting for full response
     """
-    global _is_speaking, _last_spoken_text
+    global _last_spoken_text
     ui_state("speaking")
 
     jarvis_logger.info("[SPEAK:stream] start")
@@ -1297,7 +1347,7 @@ def speak_streaming(sentences_iter):
         audio_queue.put(SENTINEL)
 
     _interrupt_event.clear()
-    _is_speaking = True
+    _mark_speaking()
 
     prod_thread = threading.Thread(target=producer, daemon=True)
     prod_thread.start()
@@ -3407,10 +3457,13 @@ def _load_whisper_locked():
         try:
             _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cuda", compute_type="float16")
             print(f"faster-whisper '{WHISPER_MODEL_SIZE}' loaded on GPU (CUDA, RTX 5070).")
+            jarvis_logger.info(f"[STT] whisper '{WHISPER_MODEL_SIZE}' на GPU (cuda/float16)")
         except Exception as ge:
             print(f"Whisper GPU load failed ({str(ge)[:80]}); falling back to CPU int8.")
+            jarvis_logger.warning(f"[STT] GPU недоступен ({str(ge)[:80]}) → CPU")
             _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
             print(f"faster-whisper '{WHISPER_MODEL_SIZE}' loaded on CPU (slower).")
+            jarvis_logger.warning(f"[STT] whisper '{WHISPER_MODEL_SIZE}' на CPU (int8) — будет медленно")
     except Exception as e:
         print(f"Whisper unavailable ({str(e)[:80]}); using Google STT fallback.")
         _whisper_model = None
@@ -3433,9 +3486,18 @@ def transcribe_whisper(audio) -> str | None:
         _t0 = time.perf_counter()
         raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
         samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        # Обрывок короче трети секунды речью быть не может — это щелчок или шум.
+        # Гонять на него модель бессмысленно.
+        if len(samples) < 16000 * 0.3:
+            _last_stt_ms = (time.perf_counter() - _t0) * 1000.0
+            return ""
         segments, _ = model.transcribe(
             samples, language="ru", beam_size=1,
             vad_filter=True, vad_parameters=dict(min_silence_duration_ms=200),
+            # Не тащим текст прошлой фразы в подсказку: это лишние токены на
+            # каждый запрос и главный источник «призраков» вроде
+            # «продолжение следует» на тишине.
+            condition_on_previous_text=False,
         )
         text = " ".join(s.text for s in segments).strip()
         _last_stt_ms = (time.perf_counter() - _t0) * 1000.0
@@ -3493,7 +3555,13 @@ def _is_wake_token(tok: str) -> bool:
         return False
     if WAKE_VARIANT_RE.match(tok):
         return True
-    return max(SequenceMatcher(None, tok, c).ratio() for c in WAKE_CANON) >= WAKE_FUZZY_THRESHOLD
+    best = max(SequenceMatcher(None, tok, c).ratio() for c in WAKE_CANON)
+    if best >= WAKE_FUZZY_THRESHOLD:
+        return True
+    # Смягчённый порог — только для токенов с характерным началом имени.
+    return (len(tok) >= WAKE_ONSET_MIN_LEN
+            and WAKE_ONSET_RE.match(tok) is not None
+            and best >= WAKE_ONSET_THRESHOLD)
 
 
 def _wake_indices(text: str):
@@ -3539,10 +3607,13 @@ def callback(recognizer, audio):
     global _wake_active_until
     try:
         phrase_start = time.time() - _audio_duration(audio)
+        speaking_now = _is_speaking or phrase_start < _speaking_cooldown_until
 
-        if _is_speaking or phrase_start < _speaking_cooldown_until:
+        # Длинная запись во время его речи — это заведомо его же голос из колонок.
+        # Не тратим на неё GPU вообще.
+        if speaking_now and _audio_duration(audio) > BARGE_IN_MAX_AUDIO:
             jarvis_logger.debug(
-                f"[STT] отброшено до транскрипции (говорит/эхо/cooldown, "
+                f"[STT] отброшено до транскрипции (эхо во время речи, "
                 f"audio={_audio_duration(audio):.1f}s)")
             return
 
@@ -3551,6 +3622,16 @@ def callback(recognizer, audio):
             return
         text_lower = text.lower().strip()
         jarvis_logger.debug(f"[STT] услышал: {text!r}")
+
+        # На своё имя Джарвис обязан отзываться даже посреди собственной фразы:
+        # зовут — обрывает ответ и слушает. Всё прочее, услышанное во время речи,
+        # это эхо из колонок или чужой разговор.
+        if speaking_now:
+            if _is_echo_of_last_spoken(text_lower) or not contains_wake_word(text_lower):
+                jarvis_logger.debug(f"[STT] пропуск во время речи: {text!r}")
+                return
+            _interrupt_event.set()
+            jarvis_logger.info(f"[STT] позвали во время речи → обрываю ответ: {text!r}")
 
 
         in_wake_window = phrase_start < _wake_active_until
@@ -3667,6 +3748,11 @@ def ui_state(s: str):
         return
     _ui_last_state = s
     ui_call(f"window.jvSetState && jvSetState({json.dumps(s)})")
+
+
+def ui_sub(text: str):
+    """Set just the small line under the orb (the phase caption)."""
+    ui_call(f"window.jvSetSub && jvSetSub({json.dumps(text, ensure_ascii=False)})")
 
 
 def ui_msg(who: str, text: str):

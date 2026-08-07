@@ -11,7 +11,7 @@
   "JARVIS_WAKE_COMMAND_WINDOW": "10.0",
   "JARVIS_PHRASE_TIME_LIMIT": "45.0",
   "TTS_ENGINE": "auto",
-  "PIPER_VOICE": "dmitri",
+  "PIPER_VOICE": "ruslan",
   "EDGE_VOICE": "ru-RU-DmitryNeural",
   "JARVIS_FOLLOWUP_WINDOW": "15.0",
   "JARVIS_FOLLOWUP_MODE": "strict",

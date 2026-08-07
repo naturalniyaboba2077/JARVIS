@@ -244,6 +244,7 @@
     if(s==='listening') clearLat();
   }
   window.jvSetState=setState;
+  window.jvSetSub=function(txt){document.getElementById('stSub').textContent=txt||SUB[state]||'';};
 
   function tickAmp(){
     if(state==='listening') ampTarget=0.34+0.26*Math.abs(Math.sin(t*0.045))+0.10*Math.abs(Math.sin(t*0.12));
