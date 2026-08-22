@@ -24,7 +24,10 @@ import speech_recognition as sr
 from openai import OpenAI
 import pygame
 import pyautogui
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 import pyperclip
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
@@ -108,6 +111,7 @@ APP_VERSION = "1.0.0"
 UI_SETTING_KEYS = {
     "JARVIS_LLM", "OLLAMA_MODEL", "OPENROUTER_MODEL", "STT_ENGINE",
     "WHISPER_MODEL", "TTS_ENGINE", "PIPER_VOICE", "EDGE_VOICE",
+    "PIPER_LENGTH_SCALE", "PIPER_NOISE_SCALE", "PIPER_NOISE_W_SCALE",
     "JARVIS_LLM_DEADLINE", "JARVIS_LLM_DEADLINE_CLOUD", "JARVIS_LLM_GEN_BUDGET",
     "JARVIS_PAUSE_THRESHOLD", "JARVIS_WAKE_COMMAND_WINDOW",
     "JARVIS_PHRASE_TIME_LIMIT", "JARVIS_FOLLOWUP_WINDOW",
@@ -149,6 +153,9 @@ def _write_config_file(updates: dict) -> tuple[bool, str]:
         "JARVIS_PHRASE_TIME_LIMIT": (10.0, 120.0),
         "JARVIS_FOLLOWUP_WINDOW": (0.0, 60.0),
         "JARVIS_SPEAK_COOLDOWN": (0.3, 5.0),
+        "PIPER_LENGTH_SCALE": (0.7, 1.5),
+        "PIPER_NOISE_SCALE": (0.1, 1.5),
+        "PIPER_NOISE_W_SCALE": (0.1, 1.5),
     }
     for key, value in updates.items():
         if key in {"OPENROUTER_API_KEY", "TELEGRAM_API_HASH"}:
@@ -450,6 +457,62 @@ def get_weather(city: str = "Moscow") -> str:
         return f"Ошибка погоды: {e}"
 
 
+_RU_WEEKDAYS = (
+    "понедельник", "вторник", "среда", "четверг",
+    "пятница", "суббота", "воскресенье",
+)
+_RU_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+_RU_MONTHS_NOMINATIVE = (
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+)
+
+
+def get_datetime_reply(text: str, now=None) -> str | None:
+    """Answer date/time questions locally without asking an LLM."""
+    t = re.sub(r'\s+', ' ', (text or '').strip().lower()).strip(' .,!?:;')
+    if not t:
+        return None
+    now = now or datetime.datetime.now()
+    weekday = _RU_WEEKDAYS[now.weekday()]
+    full_date = f"{now.day} {_RU_MONTHS[now.month - 1]} {now.year} года"
+
+    if re.fullmatch(r'(?:скажи\s+)?(?:который\s+час|сколько\s+времени|время|time)', t):
+        return f"Сейчас {now:%H:%M}, сэр."
+    if re.fullmatch(r'(?:какой\s+)?(?:сегодня\s+)?день\s+недели', t):
+        return f"Сегодня {weekday}, сэр."
+    if re.fullmatch(r'(?:какое|какой)\s+(?:сегодня\s+)?число', t):
+        return f"Сегодня {now.day} число, сэр."
+    if re.fullmatch(r'(?:какая\s+)?(?:сегодняшняя\s+|сегодня\s+)?дата', t):
+        return f"Сегодня {full_date}, сэр."
+    if re.fullmatch(r'(?:какой\s+)?(?:сейчас\s+)?месяц', t):
+        return f"Сейчас {_RU_MONTHS_NOMINATIVE[now.month - 1]}, сэр."
+    if re.fullmatch(r'(?:какой\s+)?(?:сейчас\s+)?год', t):
+        return f"Сейчас {now.year} год, сэр."
+    if re.fullmatch(r'(?:что\s+)?(?:сегодня|за\s+день\s+сегодня|какой\s+сегодня\s+день)', t):
+        return f"Сегодня {weekday}, {full_date}. Сейчас {now:%H:%M}, сэр."
+    return None
+
+
+def extract_web_search_query(text: str) -> str | None:
+    """Extract an explicit internet search request, or return None."""
+    t = re.sub(r'\s+', ' ', (text or '').strip()).strip(' .,!?:;')
+    patterns = (
+        r'^(?:пожалуйста\s+)?(?:погугли|загугли)\s+(.+)$',
+        r'^(?:пожалуйста\s+)?(?:найди|поищи)\s+(?:информацию\s+)?(?:в|по)\s+'
+        r'(?:интернете|сети|гугле)\s+(?:информацию\s+)?(?:про|о|об)?\s*(.+)$',
+        r'^(?:что|какая\s+информация)\s+(?:есть|известно)\s+(?:в|по)\s+(?:интернете|сети)\s+(?:про|о|об)\s+(.+)$',
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, t, flags=re.IGNORECASE | re.UNICODE)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return None
+
+
 def handle_local_productivity_command(text: str, speak_fn=None) -> str | None:
     """Execute common productivity commands without an LLM round-trip.
 
@@ -460,6 +523,14 @@ def handle_local_productivity_command(text: str, speak_fn=None) -> str | None:
     t = re.sub(r'\s+', ' ', (text or '').strip().lower()).strip(' .,!?:;')
     if not t:
         return None
+
+    datetime_reply = get_datetime_reply(t)
+    if datetime_reply:
+        return datetime_reply
+
+    web_query = extract_web_search_query(t)
+    if web_query:
+        return search_web(web_query)
 
     weather = re.fullmatch(
         r'(?:(?:скажи|покажи)\s+)?(?:какая\s+)?(?:сейчас\s+)?'
@@ -823,7 +894,9 @@ def prewarm_tts_cache():
     # В ключ входит не только движок, но и конкретный голос: иначе после смены
     # PIPER_VOICE готовые фразы продолжали бы играть старым голосом, а остальной
     # ответ — новым. Это тот самый баг «два голоса в одном ответе».
-    voice_id = PIPER_MODEL_PATH.stem if engine == "piper" else EDGE_VOICE
+    voice_id = (f"{PIPER_MODEL_PATH.stem}:{PIPER_LENGTH_SCALE}:"
+                f"{PIPER_NOISE_SCALE}:{PIPER_NOISE_W_SCALE}"
+                if engine == "piper" else EDGE_VOICE)
     for phrase in INSTANT_PHRASES:
         import hashlib
         h = hashlib.md5(f"{engine}:{voice_id}:{phrase}".encode("utf-8")).hexdigest()[:12]
@@ -1074,7 +1147,9 @@ def _edge_tts_to_bytes(text: str) -> bytes | None:
 PIPER_VOICE = os.getenv("PIPER_VOICE", "dmitri")
 PIPER_MODEL_PATH = Path(os.getenv(
     "PIPER_MODEL", str(JARVIS_DIR / "piper_models" / f"ru_RU-{PIPER_VOICE}-medium.onnx")))
-PIPER_LENGTH_SCALE = float(os.getenv("PIPER_LENGTH_SCALE", "1.0"))
+PIPER_LENGTH_SCALE = float(os.getenv("PIPER_LENGTH_SCALE", "1.08"))
+PIPER_NOISE_SCALE = float(os.getenv("PIPER_NOISE_SCALE", "0.50"))
+PIPER_NOISE_W_SCALE = float(os.getenv("PIPER_NOISE_W_SCALE", "0.65"))
 _piper_voice = None
 _piper_tried = False
 
@@ -1107,12 +1182,15 @@ def _load_piper():
 
 
 def _piper_syn_config():
-    """Synthesis settings, or None to use piper's defaults."""
-    if PIPER_LENGTH_SCALE == 1.0:
-        return None
+    """Calm, measured local voice settings."""
     try:
         from piper import SynthesisConfig
-        return SynthesisConfig(length_scale=PIPER_LENGTH_SCALE)
+        return SynthesisConfig(
+            length_scale=PIPER_LENGTH_SCALE,
+            noise_scale=PIPER_NOISE_SCALE,
+            noise_w_scale=PIPER_NOISE_W_SCALE,
+            normalize_audio=True,
+        )
     except Exception:
         return None
 
@@ -1426,18 +1504,47 @@ def media_control(action: str):
         print(f"Unknown media action: {action}")
 
 def search_web(query: str) -> str:
-    """Search DuckDuckGo and return the first result snippet."""
+    """Search the web and return a short, speakable summary."""
     print(f"Ищу в интернете: {query}")
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=1, region="ru-ru"))
-            if results:
-                return f"Вот что я нашел: {results[0]['body']}"
-            else:
-                return "К сожалению, ничего не нашлось."
+        results = []
+        last_error = None
+        for backend in ("duckduckgo", "startpage"):
+            try:
+                with DDGS(timeout=3) as ddgs:
+                    results = list(ddgs.text(
+                        query, max_results=2, region="ru-ru",
+                        safesearch="moderate", backend=backend))
+                if results:
+                    break
+            except Exception as error:
+                last_error = error
+        if not results and last_error:
+            raise last_error
+        summaries = []
+        seen = set()
+        for item in results:
+            title = re.sub(r'\s+', ' ', str(item.get("title") or "")).strip()
+            body = re.sub(r'\s+', ' ', str(item.get("body") or "")).strip()
+            if not body or body.lower() in seen:
+                continue
+            seen.add(body.lower())
+            piece = f"{title}: {body}" if title else body
+            summaries.append(piece[:260].rstrip())
+            if len(summaries) == 2:
+                break
+        if summaries:
+            answer = " Вот ещё: ".join(summaries)
+            return f"Вот что нашёл в интернете, сэр. {answer}"[:620].rstrip()
+        return "В интернете по этому запросу ничего не нашлось, сэр."
     except Exception as e:
         print(f"Search error: {e}")
-        return "Произошла ошибка при поиске в сети."
+        jarvis_logger.warning(f"[WEB:SEARCH] {query!r}: {e}")
+        try:
+            os.startfile("https://www.google.com/search?q=" + urllib.parse.quote(query))
+            return "Поиск временно не ответил, поэтому я открыл результаты Google, сэр."
+        except Exception:
+            return "Не удалось связаться с поиском, сэр."
 
 def type_text(text: str):
     """Type text into the active window using the clipboard to support Russian."""
@@ -3797,6 +3904,9 @@ class JarvisApi:
             "WHISPER_MODEL": result.get("WHISPER_MODEL", WHISPER_MODEL_SIZE),
             "TTS_ENGINE": result.get("TTS_ENGINE", TTS_ENGINE),
             "PIPER_VOICE": result.get("PIPER_VOICE", PIPER_VOICE),
+            "PIPER_LENGTH_SCALE": result.get("PIPER_LENGTH_SCALE", str(PIPER_LENGTH_SCALE)),
+            "PIPER_NOISE_SCALE": result.get("PIPER_NOISE_SCALE", str(PIPER_NOISE_SCALE)),
+            "PIPER_NOISE_W_SCALE": result.get("PIPER_NOISE_W_SCALE", str(PIPER_NOISE_W_SCALE)),
             "EDGE_VOICE": result.get("EDGE_VOICE", EDGE_VOICE),
             "JARVIS_PAUSE_THRESHOLD": result.get("JARVIS_PAUSE_THRESHOLD", str(PAUSE_THRESHOLD)),
             "JARVIS_WAKE_COMMAND_WINDOW": result.get("JARVIS_WAKE_COMMAND_WINDOW", str(WAKE_COMMAND_WINDOW)),

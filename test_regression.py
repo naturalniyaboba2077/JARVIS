@@ -8,6 +8,7 @@ jarvis.py — no reimplementation — so they fail if a fix is ever reverted.
 Run: python test_regression.py
 """
 import io
+import datetime
 import os
 import re
 import sys
@@ -587,6 +588,37 @@ finally:
     jarvis.todo_list = _orig_todo_list
     jarvis.todo_done = _orig_todo_done
 
+_fixed_now = datetime.datetime(2026, 8, 20, 15, 42)
+check("день недели определяется локально",
+      jarvis.get_datetime_reply("какой сегодня день недели", _fixed_now) ==
+      "Сегодня четверг, сэр.")
+check("число определяется локально",
+      jarvis.get_datetime_reply("какое сегодня число", _fixed_now) ==
+      "Сегодня 20 число, сэр.")
+check("полная дата определяется локально",
+      "20 августа 2026 года" in jarvis.get_datetime_reply(
+          "какая сегодня дата", _fixed_now))
+check("время определяется локально",
+      jarvis.get_datetime_reply("который час", _fixed_now) ==
+      "Сейчас 15:42, сэр.")
+check("обычный разговор о времени не перехватывается",
+      jarvis.get_datetime_reply("расскажи про путешествия во времени", _fixed_now) is None)
+check("погугли извлекает поисковый запрос",
+      jarvis.extract_web_search_query("погугли новости космоса") == "новости космоса")
+check("явный поиск в интернете извлекает запрос",
+      jarvis.extract_web_search_query("найди в интернете информацию про Марс") == "Марс")
+check("обычное слово найди не отправляется в интернет",
+      jarvis.extract_web_search_query("найди файл на диске") is None)
+
+_orig_search_web = jarvis.search_web
+try:
+    jarvis.search_web = lambda query: f"SEARCH:{query}"
+    check("интернет-поиск идёт локально без LLM",
+          jarvis.handle_local_productivity_command("погугли скорость света") ==
+          "SEARCH:скорость света")
+finally:
+    jarvis.search_web = _orig_search_web
+
 _orig_load_todo = jarvis.load_todo
 _orig_save_todo = jarvis.save_todo
 _dupes = [{"task": "тест", "done": False}, {"task": "тест", "done": False}]
@@ -669,6 +701,11 @@ try:
 finally:
     jarvis.TTS_ENGINE = _orig_tts_engine
     jarvis._piper_available = _orig_piper_available
+
+check("Piper использует спокойный темп", 1.0 < jarvis.PIPER_LENGTH_SCALE <= 1.2)
+check("настройки тембра Piper доступны в UI",
+      "PIPER_NOISE_SCALE" in src and
+      'data-key="PIPER_NOISE_SCALE"' in _ui_src)
 
 check("панель настроек не вставляет микрофоны через innerHTML", "s.innerHTML" not in _ui_src)
 check("панель вызывает безопасный API сохранения", "a.save_settings(collectSettings())" in _ui_src)

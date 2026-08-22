@@ -53,7 +53,7 @@ psutil
 Pillow
 
 # Web search
-duckduckgo-search
+ddgs
 
 # Google Calendar
 google-auth

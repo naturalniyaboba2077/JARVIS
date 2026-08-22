@@ -137,6 +137,9 @@
       <div class="field"><label>WHISPER MODEL</label><select data-key="WHISPER_MODEL"><option>small</option><option>medium</option><option>base</option></select></div>
       <div class="field"><label>TTS ENGINE</label><select data-key="TTS_ENGINE"><option>auto</option><option>piper</option><option>edge</option><option>xtts</option></select></div>
       <div class="field"><label>PIPER VOICE</label><select data-key="PIPER_VOICE"><option>dmitri</option><option>ruslan</option><option>denis</option><option>irina</option></select></div>
+      <div class="field"><label>ТЕМП ГОЛОСА PIPER</label><input type="number" min="0.7" max="1.5" step="0.01" data-key="PIPER_LENGTH_SCALE"></div>
+      <div class="field"><label>ВЫРАЗИТЕЛЬНОСТЬ PIPER</label><input type="number" min="0.1" max="1.5" step="0.05" data-key="PIPER_NOISE_SCALE"></div>
+      <div class="field"><label>ПЛАВНОСТЬ PIPER</label><input type="number" min="0.1" max="1.5" step="0.05" data-key="PIPER_NOISE_W_SCALE"></div>
       <div class="field"><label>EDGE VOICE</label><input data-key="EDGE_VOICE"></div>
       <div class="field"><label>ПАУЗА ДО КОНЦА ФРАЗЫ, С</label><input type="number" min="1" max="6" step="0.1" data-key="JARVIS_PAUSE_THRESHOLD"></div>
       <div class="field"><label>МАКС. ФРАЗА, С</label><input type="number" min="10" max="120" data-key="JARVIS_PHRASE_TIME_LIMIT"></div>

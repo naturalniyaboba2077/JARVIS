@@ -17,8 +17,8 @@
 ## Установка
 
 ```powershell
-git clone https://github.com/naturalniyaboba2077/JARVIS-HELPER.git
-cd JARVIS-HELPER
+git clone https://github.com/naturalniyaboba2077/JARVIS.git
+cd JARVIS
 python -m pip install -r requirements.txt
 copy jarvis_config.example.json jarvis_config.json
 ```
@@ -56,6 +56,9 @@ python jarvis.py
 - "Джарвис, зайди на youtube.com"
 - "Джарвис, включи музыку"
 - "Джарвис, какая погода в Москве"
+- "Джарвис, какой сегодня день недели"
+- "Джарвис, какое сегодня число"
+- "Джарвис, погугли последние новости о космосе"
 - "Джарвис, поставь таймер на 10 минут"
 - "Джарвис, сделай скриншот"
 - "Джарвис, статус" — покажет, живы ли модель, распознавание, голос и память"
