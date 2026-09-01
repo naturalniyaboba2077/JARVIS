@@ -133,8 +133,31 @@ check("strip_wake_word на одном обращении даёт пусто",
 
 
 section("BUG 5: TTS engine consistency (two-voices bug)")
-src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis.py"),
-           encoding="utf-8").read()
+# Исходник ядра целиком. Проверки вида «такая-то строка есть в ядре» не должны
+# зависеть от того, в каком файле она лежит: монолит jarvis.py разбирается на
+# модули, и новые jarvis_*.py подхватываются здесь автоматически.
+_CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+CORE_FILES = tuple(sorted(f for f in os.listdir(_CORE_DIR)
+                          if f.startswith("jarvis") and f.endswith(".py")))
+
+
+def module_src(name):
+    path = os.path.join(_CORE_DIR, name)
+    if not os.path.exists(path):
+        return ""
+    return open(path, encoding="utf-8").read()
+
+
+def source_containing(marker):
+    """Исходник того модуля ядра, где определён marker."""
+    for name in CORE_FILES:
+        text = module_src(name)
+        if marker in text:
+            return text
+    raise AssertionError("не найден ни в одном модуле ядра: %s" % marker)
+
+
+src = "\n".join(module_src(name) for name in CORE_FILES)
 
 check("piper НЕ используется как fallback при TTS_ENGINE=edge",
       'if engine not in {"edge", "piper"} and _piper_available():' in src)
@@ -710,7 +733,8 @@ finally:
     jarvis.os.startfile = _orig_startfile
     jarvis.shutil.which = _orig_which
 
-_run_src = src[src.index("def run_assistant():"):]
+_run_assistant_module = source_containing("def run_assistant():")
+_run_src = _run_assistant_module[_run_assistant_module.index("def run_assistant():"):]
 check("специальные intent-команды имеют приоритет над open-any",
       _run_src.index("intent_tag = detect_intent_from_text(cmd_lower)") <
       _run_src.index("open_query = extract_open_app_request(cmd_lower)"))
