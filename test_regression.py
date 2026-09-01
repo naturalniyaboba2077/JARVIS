@@ -287,10 +287,21 @@ _stub_names = ("execute_system_command", "play_yandex_music", "search_web", "typ
                "get_system_stats", "remember", "recall", "todo_add", "todo_list",
                "todo_done", "set_timer", "execute_python_code", "run_shell_command",
                "telegram_list_chats", "telegram_read_dialog", "telegram_search_dialog",
-               "telegram_export_dialog", "telegram_request_send")
+               "telegram_export_dialog", "telegram_request_send", "lookup_identity")
 _saved_fns = {n: getattr(jarvis, n) for n in _stub_names if hasattr(jarvis, n)}
 for n in _saved_fns:
     setattr(jarvis, n, lambda *a, **k: "ок")
+
+_feat_stub_names = (
+    "window_show_desktop", "window_minimize_active", "window_maximize_active",
+    "window_close_active", "window_switch", "clipboard_read", "clipboard_paste",
+    "reminder_add", "reminder_add_in_seconds", "reminders_list",
+    "open_latest_download", "find_files", "open_path",
+    "ocr_screen", "gmail_unread", "session_summary", "session_clear",
+)
+_saved_feat = {n: getattr(jarvis._feat, n) for n in _feat_stub_names}
+for n in _saved_feat:
+    setattr(jarvis._feat, n, lambda *a, **k: "ок")
 
 ADVERTISED = [
     "[OPEN:browser]", "[OPEN:notepad]", "[OPEN:calc]", "[MUSIC:OPEN]",
@@ -303,6 +314,13 @@ ADVERTISED = [
     "[OB:LIST]", "[OB:DELETE:Т]", "[TG:CHATS]", "[TG:READ:Иван:10]",
     "[TG:SEARCH:Иван:договор]", "[TG:EXPORT:Иван:200]",
     "[TG:SEND:Иван:буду через час]", "[CMD:Get-Process]",
+    "[WIN:DESKTOP]", "[WIN:MINIMIZE]", "[WIN:MAXIMIZE]", "[WIN:CLOSE]",
+    "[WIN:SWITCH:Chrome]", "[CLIP:READ]", "[CLIP:PASTE]",
+    "[REMIND:18:30:молоко]", "[REMIND:IN:60:чай]", "[REMIND:LIST]",
+    "[FILE:LATEST]", "[FILE:FIND:отчет]", "[FILE:OPEN:C:/tmp/a.txt]",
+    "[OCR]", "[OCR:WINDOW]", "[MAIL:UNREAD]",
+    "[SESSION:SUMMARY]", "[SESSION:CLEAR]",
+    "[LOOKUP:TG:durov]", "[LOOKUP:PHONE:+79991234567]",
 ]
 _leaked = []
 for tag in ADVERTISED:
@@ -315,6 +333,8 @@ check(f"все {len(ADVERTISED)} рекламируемых тегов испо�
 
 for n, fn in _saved_fns.items():
     setattr(jarvis, n, fn)
+for n, fn in _saved_feat.items():
+    setattr(jarvis._feat, n, fn)
 
 
 section("BUG 11: [CMD] — выполнение команд в терминале")
@@ -483,13 +503,18 @@ _low = _prompt.lower()
 for _bad in ("evil", "emperor", "malware", "yin yang", "keylogger", "rat", "virus"):
     check(f"промпт не содержит '{_bad}'", _bad not in _low, f"найдено: {_bad}")
 check("промпт остаётся tag-first (есть таблица тегов)", "ТЕГИ ДЕЙСТВИЙ" in _prompt)
-check("промпт краткий (≤ 5000 симв., включая Telegram)", len(_prompt) <= 5000, f"длина={len(_prompt)}")
+check("промпт краткий (≤ 7000 симв., включая v1.1 теги)", len(_prompt) <= 7000, f"длина={len(_prompt)}")
 check("сохранена роль J.A.R.V.I.S. + «сэр»",
       "J.A.R.V.I.S" in _prompt and "сэр" in _prompt)
+check("промпт явно без тематических отказов",
+      "без тематических отказов" in _low and "не морализируй" in _low)
+check("веб-поиск без SafeSearch",
+      'safesearch="off"' in src or "safesearch='off'" in src)
 for _tag in ("[OPEN:", "[MUSIC:", "[SEARCH:", "[SYS:VOL:", "[MEDIA:", "[TYPE:",
              "[CAL:READ", "[CAL:ADD", "[MEMORY:", "[TODO:", "[TIMER:", "[WEATHER",
              "[SYSINFO]", "[SCREENSHOT]", "[LOCK]", "[BRIGHT:", "[OB:", "[TG:", "[CMD:",
-             "[EXECUTE_PYTHON]"):
+             "[EXECUTE_PYTHON]", "[WIN:", "[CLIP:", "[REMIND:", "[FILE:", "[OCR]",
+             "[MAIL:UNREAD]", "[SESSION:", "[LOOKUP:TG:", "[LOOKUP:PHONE:"):
     check(f"тег {_tag} описан в промпте", _tag in _prompt)
 
 
@@ -710,7 +735,8 @@ check("настройки тембра Piper доступны в UI",
 check("панель настроек не вставляет микрофоны через innerHTML", "s.innerHTML" not in _ui_src)
 check("панель вызывает безопасный API сохранения", "a.save_settings(collectSettings())" in _ui_src)
 check("API-ключ не возвращается в UI", "OPENROUTER_API_KEY_SET" in src)
-check("версия приложения задана", jarvis.APP_VERSION == "1.0.0")
+check("версия приложения задана", jarvis.APP_VERSION.startswith("1."),
+      f"APP_VERSION={jarvis.APP_VERSION}")
 
 _old_spoken = jarvis._last_spoken_text
 _old_followup_mode = jarvis.FOLLOWUP_MODE
@@ -844,6 +870,58 @@ try:
           not jarvis._is_echo_of_last_spoken("поставь таймер на десять минут"))
 finally:
     jarvis._last_spoken_text = _saved_spoken
+
+
+section("BUG 21: v1.1 features — session / windows / remind / files / mail hooks")
+check("модуль jarvis_features подключён", hasattr(jarvis, "_feat"))
+_f = jarvis._feat
+_when = _f.parse_reminder_request("напомни в 18:30 купить молоко")
+check("парсер напоминания 'в ЧЧ:ММ'", _when is not None and "молоко" in _when[1])
+_when2 = _f.parse_reminder_request("напомни через 10 минут чай")
+check("парсер напоминания 'через N минут'", _when2 is not None and "чай" in _when2[1])
+check("не-напоминание не парсится", _f.parse_reminder_request("какая погода") is None)
+
+_f.session_clear()
+_f.session_record("user", "привет")
+_f.session_record("assistant", "Здравствуйте, сэр.")
+check("session_context не пуст после записи", len(_f.session_context()) > 0)
+check("session_summary отвечает", "сэр" in _f.session_summary().lower())
+_f.session_clear()
+check("session_clear очищает контекст", _f.session_context() == "")
+
+_saved_desk = _f.window_show_desktop
+_saved_clip = _f.clipboard_read
+_f.window_show_desktop = lambda: "ок-стол"
+_f.clipboard_read = lambda: "ок-буфер"
+try:
+    check("локальная команда буфера ловится",
+          jarvis.handle_local_feature_command("что в буфере") == "ок-буфер")
+    check("роутер рабочего стола вызывает handler",
+          jarvis.handle_local_feature_command("покажи рабочий стол") == "ок-стол")
+finally:
+    _f.window_show_desktop = _saved_desk
+    _f.clipboard_read = _saved_clip
+check("режим фокуса распознаётся роутером",
+      _f.handle_feature_command("режим фокус") == "__FOCUS_MODE__")
+check("open-any не перехватывает 'открой файл …'",
+      jarvis.extract_open_app_request("открой файл отчет") is None)
+check("open-any не перехватывает 'открой окно chrome'",
+      jarvis.extract_open_app_request("открой окно chrome") is None)
+check("версия 1.1+", tuple(int(x) for x in jarvis.APP_VERSION.split(".")[:2]) >= (1, 1))
+check("FAST_VAD флаг описан в коде", "JARVIS_FAST_VAD" in src)
+check("lookup: юзернейм @durov",
+      jarvis.extract_lookup_request("найди информацию по юзернейму @durov") == ("tg", "durov"))
+check("lookup: номер телефона",
+      jarvis.extract_lookup_request("найди информацию по номеру +7 999 123-45-67")
+      == ("phone", "+79991234567"))
+check("lookup: 8XXXXXXXXXX нормализуется в +7",
+      jarvis.extract_lookup_request("пробей номер 89991234567") == ("phone", "+79991234567"))
+check("обычная фраза не становится lookup",
+      jarvis.extract_lookup_request("открой браузер") is None)
+check("гипотетический lookup не идёт в detect_telegram_intent",
+      jarvis.detect_telegram_intent_from_text(
+          "если я попрошу найти в телеграме пользователя durov, ты сможешь?") is None)
+check("тег LOOKUP описан в промпте", "[LOOKUP:TG:" in jarvis.SYSTEM_PROMPT_BASE)
 
 
 section("Статический анализ: файл импортируется и парсится")

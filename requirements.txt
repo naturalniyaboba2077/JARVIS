@@ -46,11 +46,15 @@ pygame
 # Automation
 pyautogui
 pyperclip
+pygetwindow
+keyboard
 pycaw
 comtypes
 screen-brightness-control
 psutil
 Pillow
+# Optional OCR (also needs the Tesseract OCR binary on PATH):
+pytesseract
 
 # Web search
 ddgs

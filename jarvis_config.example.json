@@ -1,5 +1,10 @@
 {
   "OPENROUTER_API_KEY": "sk-or-v1-YOUR_KEY_HERE",
+  "OPENROUTER_MODEL": "deepseek/deepseek-v4-flash",
+  "OPENROUTER_FREE_MODEL": "openrouter/free",
+  "OPENROUTER_AGENT_MODEL": "openrouter/free",
+  "JARVIS_PROJECT_ROOTS": "%USERPROFILE%\\Documents;%USERPROFILE%\\Desktop",
+  "SESSION_MEMORY": "off",
   "JARVIS_LLM": "local",
   "OLLAMA_MODEL": "qwen2.5:3b",
   "JARVIS_LLM_DEADLINE": "1.5",
@@ -21,6 +26,9 @@
   "TELEGRAM_API_ID": "",
   "TELEGRAM_API_HASH": "",
   "TELEGRAM_PHONE": "",
+  "TELEGRAM_REPORT_BOT_TOKEN": "",
+  "TELEGRAM_REPORT_CHAT_ID": "",
   "JARVIS_UI": "on",
-  "JARVIS_OVERLAY": "on"
+  "JARVIS_OVERLAY": "on",
+  "JARVIS_FAST_VAD": "off"
 }

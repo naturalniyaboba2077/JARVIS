@@ -6,6 +6,9 @@ credentials.json
 token.json
 jarvis_memory.json
 jarvis_todo.json
+jarvis_session.json
+jarvis_reminders.json
+custom_patch.py
 telegram_data/
 
 # ── Heavy / downloaded models ──

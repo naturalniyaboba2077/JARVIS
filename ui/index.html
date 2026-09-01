@@ -130,6 +130,10 @@
       <div class="field"><label>LLM</label><select data-key="JARVIS_LLM"><option value="local">local + cloud fallback</option><option value="cloud">cloud + local fallback</option></select></div>
       <div class="field"><label>OLLAMA MODEL</label><input data-key="OLLAMA_MODEL"></div>
       <div class="field"><label>OPENROUTER MODEL</label><input data-key="OPENROUTER_MODEL"></div>
+      <div class="field"><label>БЕСПЛАТНАЯ РЕЗЕРВНАЯ МОДЕЛЬ</label><input data-key="OPENROUTER_FREE_MODEL"></div>
+      <div class="field"><label>МОДЕЛЬ ДЛЯ РАБОТЫ С ПРОЕКТАМИ</label><input data-key="OPENROUTER_AGENT_MODEL"></div>
+      <div class="field"><label>ПАПКИ ПРОЕКТОВ (ЧЕРЕЗ ;)</label><input data-key="JARVIS_PROJECT_ROOTS"></div>
+      <div class="field"><label>СЕССИОННАЯ ПАМЯТЬ</label><select data-key="SESSION_MEMORY"><option>off</option><option>on</option></select></div>
       <div class="field"><label>LOCAL LLM DEADLINE, С</label><input type="number" min="0.2" max="15" step="0.1" data-key="JARVIS_LLM_DEADLINE"></div>
       <div class="field"><label>CLOUD LLM DEADLINE, С</label><input type="number" min="1" max="30" step="0.5" data-key="JARVIS_LLM_DEADLINE_CLOUD"></div>
       <div class="field"><label>GENERATION BUDGET, С</label><input type="number" min="1" max="60" step="1" data-key="JARVIS_LLM_GEN_BUDGET"></div>
