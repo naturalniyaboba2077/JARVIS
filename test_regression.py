@@ -161,6 +161,14 @@ src = "\n".join(module_src(name) for name in CORE_FILES)
 
 check("piper НЕ используется как fallback при TTS_ENGINE=edge",
       'if engine not in {"edge", "piper"} and _piper_available():' in src)
+
+# Настройки из jarvis_config.json попадают в окружение в _load_config(). Если
+# ядро успеет прочитать os.getenv раньше, значение из файла молча потеряется —
+# именно так TTS_ENGINE из конфига долгое время игнорировался.
+_jarvis_src = module_src("jarvis.py")
+check("конфиг загружается раньше первого чтения настроек движка",
+      _jarvis_src.index("from jarvis_config import") <
+      _jarvis_src.index('os.getenv("TTS_ENGINE"'))
 check("кэш TTS помечен текущим движком (а не всегда piper)",
       "engine = effective" in src)
 check("ключ кэша учитывает голос, а не только движок",
