@@ -23,21 +23,13 @@ import requests as http_requests
 import speech_recognition as sr
 from openai import OpenAI
 import pygame
-import pyautogui
 try:
     from ddgs import DDGS
 except ImportError:
     from duckduckgo_search import DDGS
 import pyperclip
-from ctypes import cast, POINTER
-from comtypes import CLSCTX_ALL
-from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 import psutil
 
-try:
-    import screen_brightness_control as sbc
-except ImportError:
-    sbc = None
 
 try:
     from PIL import ImageGrab
@@ -50,6 +42,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 import jarvis_features as _feat
+import jarvis_platform as _plat
 import project_agent as _project_agent
 
 try:
@@ -663,22 +656,11 @@ def take_screenshot() -> str:
 
 def lock_pc() -> str:
     """Lock the Windows workstation."""
-    try:
-        ctypes.windll.user32.LockWorkStation()
-        return "Рабочая станция заблокирована, сэр."
-    except Exception as e:
-        return f"Ошибка блокировки: {e}"
+    return _plat.lock_workstation()[1]
 
 def set_brightness(level: int) -> str:
     """Set screen brightness (0-100)."""
-    if sbc is None:
-        return "Управление яркостью недоступно."
-    try:
-        level = max(0, min(100, level))
-        sbc.set_brightness(level)
-        return f"Яркость установлена на {level}%."
-    except Exception as e:
-        return f"Ошибка яркости: {e}"
+    return _plat.set_brightness(level)[1]
 
 _obsidian_cache = None
 _obsidian_cache_time = 0
@@ -1502,29 +1484,15 @@ def speak_streaming(sentences_iter):
 
 def set_volume(level: int):
     """Set system volume level (0-100)."""
-    try:
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(
-            IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        
-        level = max(0, min(100, level))
-        
-        scalar = level / 100.0
-        volume.SetMasterVolumeLevelScalar(scalar, None)
-        print(f"Volume set to {level}%")
-    except Exception as e:
-        print(f"Error setting volume: {e}")
+    ok, note = _plat.set_master_volume(level)
+    if ok:
+        print(f"Volume set to {max(0, min(100, level))}%")
+    else:
+        print(f"Error setting volume: {note}")
 
 def get_volume() -> int:
     """Return current system volume as 0-100 (or -1 on error)."""
-    try:
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        return int(round(volume.GetMasterVolumeLevelScalar() * 100))
-    except Exception:
-        return -1
+    return _plat.get_master_volume()
 
 
 def nudge_volume(delta: int) -> int:
@@ -1539,15 +1507,9 @@ def nudge_volume(delta: int) -> int:
 
 def media_control(action: str):
     """Control media via keyboard emulation."""
-    action = action.lower()
-    if action == "playpause":
-        pyautogui.press("playpause")
-    elif action == "next":
-        pyautogui.press("nexttrack")
-    elif action == "prev":
-        pyautogui.press("prevtrack")
-    else:
-        print(f"Unknown media action: {action}")
+    ok, note = _plat.press_media_key(action)
+    if not ok:
+        print(f"Media control unavailable: {note}")
 
 def search_web(query: str) -> str:
     """Search the web and return a short, speakable summary."""
@@ -1599,7 +1561,7 @@ def type_text(text: str):
         original_clipboard = pyperclip.paste()
         pyperclip.copy(text)
         time.sleep(0.1)
-        pyautogui.hotkey('ctrl', 'v')
+        _plat.paste_from_clipboard()
         time.sleep(0.1)
         pyperclip.copy(original_clipboard)
     except Exception as e:
@@ -2720,7 +2682,7 @@ def play_yandex_music(query: str, auto_play: bool = True):
         def _auto_play():
             try:
                 time.sleep(6)
-                pyautogui.press('playpause')
+                _plat.press_media_key("playpause")
                 jarvis_logger.info("[MUSIC] sent global play/pause media key")
             except Exception as e:
                 jarvis_logger.warning(f"[MUSIC] autoplay unavailable: {e}")
@@ -2843,7 +2805,7 @@ def execute_python_code(code: str) -> str:
     print(code)
     print("------------------------------------")
 
-    env = {"os": os, "subprocess": subprocess, "time": time, "pyautogui": pyautogui}
+    env = {"os": os, "subprocess": subprocess, "time": time, "pyautogui": _plat.pyautogui}
     try:
         exec(code, env)
         return "Команда выполнена, сэр."
@@ -4853,17 +4815,15 @@ def run_assistant():
                     _local_reply(set_brightness(int(br_num.group(1))))
                     continue
                 if "ярче" in cmd_lower:
-                    cur = None
-                    if sbc is not None:
-                        try: cur = sbc.get_brightness()[0]
-                        except Exception: cur = None
+                    cur = _plat.get_brightness()
+                    if cur < 0:
+                        cur = None
                     _local_reply(set_brightness((cur if cur is not None else 50) + 20))
                     continue
                 if _has_word(cmd_lower, ["темнее", "потемнее"]):
-                    cur = None
-                    if sbc is not None:
-                        try: cur = sbc.get_brightness()[0]
-                        except Exception: cur = None
+                    cur = _plat.get_brightness()
+                    if cur < 0:
+                        cur = None
                     _local_reply(set_brightness((cur if cur is not None else 50) - 20))
                     continue
 

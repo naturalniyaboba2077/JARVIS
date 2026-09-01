@@ -755,7 +755,8 @@ finally:
 
 check("музыка не делает слепой клик по центру экрана",
       "pyautogui.click(screen_width / 2" not in src)
-check("музыка использует безопасную media-клавишу", "pyautogui.press('playpause')" in src)
+check("музыка использует безопасную media-клавишу",
+      '_plat.press_media_key("playpause")' in src)
 check("STT пишет длительность аудио в метрики", "[STT:metrics]" in src)
 check("maximize не вызывает pywebview maximize напрямую",
       '_ui_window.maximize()' not in src)
