@@ -16,8 +16,10 @@
 
 import ast
 import builtins
+import importlib
 import io
 import os
+import symtable
 import sys
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -84,6 +86,45 @@ _plat_bad = unguarded_platform_imports("jarvis_platform.py")
 check("jarvis_platform прячет платформенные импорты в try/except", not _plat_bad,
       "; ".join("%s (строка %d)" % (n, l) for n, l in _plat_bad))
 
+
+
+def undefined_globals(path):
+    """Обращения к глобальным именам, которых в модуле нет.
+
+    При выносе кода из монолита тело функции легко оставляет ссылку на
+    глобаль из jarvis.py, которая не переехала. Импорт такое не ловит —
+    только вызов, а вызов в тестах часто подменён заглушкой. Так уже был
+    пропущен NameError на `re` в jarvis_config._write_config_file.
+    """
+    text = io.open(path, encoding="utf-8").read()
+    top = symtable.symtable(text, path, "exec")
+    known = set(top.get_identifiers()) | set(dir(builtins))
+
+    # `from X import *` приносит имена, которых в тексте модуля не видно.
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+            mod = importlib.import_module(node.module)
+            known |= set(getattr(mod, "__all__", None) or dir(mod))
+
+    missing = []
+
+    def walk(table, scope):
+        for sym in table.get_symbols():
+            name = sym.get_name()
+            if sym.is_global() and name not in known:
+                missing.append("%s -> %s" % (scope, name))
+        for child in table.get_children():
+            walk(child, scope + "." + child.get_name())
+
+    walk(top, os.path.basename(path))
+    return sorted(set(missing))
+
+
+section("Модули ядра не ссылаются на чужие глобали")
+for _mod in sorted(f for f in os.listdir(".")
+                   if f.startswith("jarvis") and f.endswith(".py")):
+    _missing = undefined_globals(_mod)
+    check("%s — все имена объявлены" % _mod, not _missing, "; ".join(_missing))
 
 section("В рантайме: ядро при заблокированных Windows-библиотеках")
 
