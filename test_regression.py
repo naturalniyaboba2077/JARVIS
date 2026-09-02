@@ -675,18 +675,20 @@ try:
 finally:
     jarvis.search_web = _orig_search_web
 
-_orig_load_todo = jarvis.load_todo
-_orig_save_todo = jarvis.save_todo
+import jarvis_store
+
+_orig_load_todo = jarvis_store.load_todo
+_orig_save_todo = jarvis_store.save_todo
 _dupes = [{"task": "тест", "done": False}, {"task": "тест", "done": False}]
 try:
-    jarvis.load_todo = lambda: _dupes
-    jarvis.save_todo = lambda items: None
-    jarvis.todo_done(1)
+    jarvis_store.load_todo = lambda: _dupes
+    jarvis_store.save_todo = lambda items: None
+    jarvis_store.todo_done(1)
     check("todo_done закрывает только выбранный дубликат",
           _dupes[0]["done"] and not _dupes[1]["done"])
 finally:
-    jarvis.load_todo = _orig_load_todo
-    jarvis.save_todo = _orig_save_todo
+    jarvis_store.load_todo = _orig_load_todo
+    jarvis_store.save_todo = _orig_save_todo
 
 
 section("BUG 18: UI не исполняет HTML из речи или ответа LLM")
