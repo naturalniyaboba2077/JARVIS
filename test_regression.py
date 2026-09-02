@@ -193,21 +193,27 @@ import queue as _q
 import time as _t
 
 
+import jarvis_llm
+
+
 def _run_llm(local_engine, cloud_engine, deadline=0.3):
     """Drive the REAL _llm_deltas with stubbed engines."""
-    saved = (jarvis._ollama_deltas, jarvis._cloud_deltas, jarvis._ollama_available,
-             jarvis.OPENROUTER_API_KEY, jarvis.LLM_ENGINE, jarvis.LLM_DEADLINE)
-    jarvis._ollama_deltas = lambda m, **kw: local_engine()
-    jarvis._cloud_deltas = lambda m, **kw: cloud_engine()
-    jarvis._ollama_available = lambda: True
-    jarvis.OPENROUTER_API_KEY = "test-key"
-    jarvis.LLM_ENGINE = "local"
-    jarvis.LLM_DEADLINE = deadline
+    saved = (jarvis_llm._ollama_deltas, jarvis_llm._cloud_deltas,
+             jarvis_llm._ollama_available, jarvis_llm.OPENROUTER_API_KEY,
+             jarvis_llm.LLM_ENGINE, jarvis_llm.LLM_DEADLINE)
+    jarvis_llm._ollama_deltas = lambda m, **kw: local_engine()
+    jarvis_llm._cloud_deltas = lambda m, **kw: cloud_engine()
+    jarvis_llm._ollama_available = lambda: True
+    jarvis_llm.OPENROUTER_API_KEY = "test-key"
+    jarvis_llm.LLM_ENGINE = "local"
+    jarvis_llm.LLM_DEADLINE = deadline
     try:
-        return list(jarvis._llm_deltas([{"role": "user", "content": "тест"}], prefer="local"))
+        return list(jarvis_llm._llm_deltas(
+            [{"role": "user", "content": "тест"}], prefer="local"))
     finally:
-        (jarvis._ollama_deltas, jarvis._cloud_deltas, jarvis._ollama_available,
-         jarvis.OPENROUTER_API_KEY, jarvis.LLM_ENGINE, jarvis.LLM_DEADLINE) = saved
+        (jarvis_llm._ollama_deltas, jarvis_llm._cloud_deltas,
+         jarvis_llm._ollama_available, jarvis_llm.OPENROUTER_API_KEY,
+         jarvis_llm.LLM_ENGINE, jarvis_llm.LLM_DEADLINE) = saved
 
 
 def _empty_engine():
@@ -397,16 +403,16 @@ COMPLEX_Q = ["напиши python скрипт для сортировки фа�
              "проанализируй логи и найди причину падения",
              "сделай рефактор этой функции"]
 
-_mis_simple = [q for q in SIMPLE_Q if jarvis._classify_complexity(q)[0] != "local"]
-_mis_complex = [q for q in COMPLEX_Q if jarvis._classify_complexity(q)[0] != "cloud"]
+_mis_simple = [q for q in SIMPLE_Q if jarvis_llm._classify_complexity(q)[0] != "local"]
+_mis_complex = [q for q in COMPLEX_Q if jarvis_llm._classify_complexity(q)[0] != "cloud"]
 check("простые запросы → локалка (Ollama)", not _mis_simple, f"ушли в облако: {_mis_simple}")
 check("сложные запросы → облако (DeepSeek)", not _mis_complex, f"остались на локалке: {_mis_complex}")
 
-check("_llm_deltas принимает prefer", "prefer" in __import__("inspect").signature(jarvis._llm_deltas).parameters)
+check("_llm_deltas принимает prefer", "prefer" in __import__("inspect").signature(jarvis_llm._llm_deltas).parameters)
 check("_cloud_deltas принимает max_tokens",
-      "max_tokens" in __import__("inspect").signature(jarvis._cloud_deltas).parameters)
+      "max_tokens" in __import__("inspect").signature(jarvis_llm._cloud_deltas).parameters)
 check("облачный дедлайн щедрее локального (не бросать сильную модель на 1.5с)",
-      jarvis.LLM_DEADLINE_CLOUD > jarvis.LLM_DEADLINE)
+      jarvis_llm.LLM_DEADLINE_CLOUD > jarvis_llm.LLM_DEADLINE)
 
 _order = []
 def _spy_pump(engine, messages):
@@ -414,43 +420,43 @@ def _spy_pump(engine, messages):
     q = _qq.Queue()
     q.put(("delta", "x")); q.put(("end", None))
     return q
-_savedpump, _savedlocal, _savedcloud = jarvis._pump_engine, jarvis._ollama_deltas, jarvis._cloud_deltas
-_savedavail, _savedkey, _savedeng = jarvis._ollama_available, jarvis.OPENROUTER_API_KEY, jarvis.LLM_ENGINE
+_savedpump, _savedlocal, _savedcloud = jarvis_llm._pump_engine, jarvis_llm._ollama_deltas, jarvis_llm._cloud_deltas
+_savedavail, _savedkey, _savedeng = jarvis_llm._ollama_available, jarvis_llm.OPENROUTER_API_KEY, jarvis_llm.LLM_ENGINE
 try:
-    jarvis._ollama_available = lambda: True
-    jarvis.OPENROUTER_API_KEY = "k"
-    jarvis.LLM_ENGINE = "local"
+    jarvis_llm._ollama_available = lambda: True
+    jarvis_llm.OPENROUTER_API_KEY = "k"
+    jarvis_llm.LLM_ENGINE = "local"
     def _mk(tag):
         def _e(m, **kw):
             _order.append(tag); yield "x"
         return _e
-    jarvis._ollama_deltas = _mk("local")
-    jarvis._cloud_deltas = _mk("cloud")
-    _order.clear(); list(jarvis._llm_deltas([{"role":"user","content":"x"}], prefer="local"))
+    jarvis_llm._ollama_deltas = _mk("local")
+    jarvis_llm._cloud_deltas = _mk("cloud")
+    _order.clear(); list(jarvis_llm._llm_deltas([{"role":"user","content":"x"}], prefer="local"))
     _first_local = _order[0] if _order else None
-    _order.clear(); list(jarvis._llm_deltas([{"role":"user","content":"x"}], prefer="cloud"))
+    _order.clear(); list(jarvis_llm._llm_deltas([{"role":"user","content":"x"}], prefer="cloud"))
     _first_cloud = _order[0] if _order else None
     check("prefer=local → первым идёт локальный движок", _first_local == "local", _first_local)
     check("prefer=cloud → первым идёт облачный движок", _first_cloud == "cloud", _first_cloud)
 finally:
-    (jarvis._pump_engine, jarvis._ollama_deltas, jarvis._cloud_deltas,
-     jarvis._ollama_available, jarvis.OPENROUTER_API_KEY, jarvis.LLM_ENGINE) = (
+    (jarvis_llm._pump_engine, jarvis_llm._ollama_deltas, jarvis_llm._cloud_deltas,
+     jarvis_llm._ollama_available, jarvis_llm.OPENROUTER_API_KEY, jarvis_llm.LLM_ENGINE) = (
         _savedpump, _savedlocal, _savedcloud, _savedavail, _savedkey, _savedeng)
 
 
 section("BUG 13: ROADMAP A1 — LLM никогда не молчит")
 _spoken = []
 _saved = (jarvis.speak, jarvis.speak_streaming, jarvis.ui_state, jarvis.ui_msg,
-          jarvis.ui_lat, jarvis.ui_clear_lat, jarvis._ollama_deltas,
-          jarvis._cloud_deltas, jarvis._ollama_available, jarvis.OPENROUTER_API_KEY,
-          jarvis.LLM_ENGINE)
+          jarvis.ui_lat, jarvis.ui_clear_lat, jarvis_llm._ollama_deltas,
+          jarvis_llm._cloud_deltas, jarvis_llm._ollama_available, jarvis_llm.OPENROUTER_API_KEY,
+          jarvis_llm.LLM_ENGINE)
 jarvis.speak = lambda t: _spoken.append(t)
 jarvis.speak_streaming = lambda it: _spoken.append(" ".join(list(it)))
 for _u in ("ui_state", "ui_msg", "ui_lat", "ui_clear_lat"):
     setattr(jarvis, _u, lambda *a, **k: None)
-jarvis._ollama_available = lambda: True
-jarvis.OPENROUTER_API_KEY = "k"
-jarvis.LLM_ENGINE = "local"
+jarvis_llm._ollama_available = lambda: True
+jarvis_llm.OPENROUTER_API_KEY = "k"
+jarvis_llm.LLM_ENGINE = "local"
 
 
 def _empty_stream(m, **kw):
@@ -459,8 +465,8 @@ def _empty_stream(m, **kw):
 
 
 try:
-    jarvis._ollama_deltas = _empty_stream
-    jarvis._cloud_deltas = _empty_stream
+    jarvis_llm._ollama_deltas = _empty_stream
+    jarvis_llm._cloud_deltas = _empty_stream
     _spoken.clear()
     ret = jarvis.process_with_llm_streaming("расскажи что-нибудь")
     check("оба движка пусты → Джарвис ГОВОРИТ (не тишина)", len(_spoken) >= 1, f"_spoken={_spoken}")
@@ -471,20 +477,20 @@ try:
     def _err_json_stream(m, **kw):
         raise RuntimeError("ollama error: model runner has stopped")
         yield
-    jarvis._ollama_deltas = _err_json_stream
-    jarvis._cloud_deltas = lambda m, **kw: (t for t in ["Готово", ", сэр."])
+    jarvis_llm._ollama_deltas = _err_json_stream
+    jarvis_llm._cloud_deltas = lambda m, **kw: (t for t in ["Готово", ", сэр."])
     _spoken.clear()
     ret = jarvis.process_with_llm_streaming("привет")
     check("ошибка Ollama → откат в облако, ответ получен", "Готово" in (ret or ""), repr(ret))
 finally:
     (jarvis.speak, jarvis.speak_streaming, jarvis.ui_state, jarvis.ui_msg,
-     jarvis.ui_lat, jarvis.ui_clear_lat, jarvis._ollama_deltas,
-     jarvis._cloud_deltas, jarvis._ollama_available, jarvis.OPENROUTER_API_KEY,
-     jarvis.LLM_ENGINE) = _saved
+     jarvis.ui_lat, jarvis.ui_clear_lat, jarvis_llm._ollama_deltas,
+     jarvis_llm._cloud_deltas, jarvis_llm._ollama_available, jarvis_llm.OPENROUTER_API_KEY,
+     jarvis_llm.LLM_ENGINE) = _saved
 
 check("_ollama_deltas ловит error-поле и логирует его",
       'jarvis_logger.error(f"[LLM:ollama] error в теле ответа' in src)
-check("счётчик пустых фолловеров ведётся", "_llm_empty_failovers" in src)
+check("счётчик пустых фолловеров ведётся", "_state.llm_empty_failovers" in src)
 
 
 section("BUG 14: anti-wipe filter (блок ТОЛЬКО сноса системы/проектов)")
