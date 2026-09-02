@@ -30,6 +30,7 @@ import jarvis_apps
 import jarvis_llm
 import jarvis_state
 import jarvis_store
+import jarvis_tts
 import jarvis_telegram
 
 
@@ -170,10 +171,10 @@ check("piper НЕ используется как fallback при TTS_ENGINE=edg
 # Настройки из jarvis_config.json попадают в окружение в _load_config(). Если
 # ядро успеет прочитать os.getenv раньше, значение из файла молча потеряется —
 # именно так TTS_ENGINE из конфига долгое время игнорировался.
-_jarvis_src = module_src("jarvis.py")
+_tts_owner = source_containing('os.getenv("TTS_ENGINE"')
 check("конфиг загружается раньше первого чтения настроек движка",
-      _jarvis_src.index("from jarvis_config import") <
-      _jarvis_src.index('os.getenv("TTS_ENGINE"'))
+      _tts_owner.index("from jarvis_config import") <
+      _tts_owner.index('os.getenv("TTS_ENGINE"'))
 check("кэш TTS помечен текущим движком (а не всегда piper)",
       "engine = effective" in src)
 check("ключ кэша учитывает голос, а не только движок",
@@ -755,17 +756,19 @@ check("специальные intent-команды имеют приорите�
       _run_src.index("intent_tag = detect_intent_from_text(cmd_lower)") <
       _run_src.index("open_query = extract_open_app_request(cmd_lower)"))
 
-_orig_tts_engine = jarvis.TTS_ENGINE
-_orig_piper_available = jarvis._piper_available
+_orig_tts_engine = jarvis_tts.TTS_ENGINE
+_orig_piper_available = jarvis_tts._piper_available
 try:
-    jarvis.TTS_ENGINE = "auto"
-    jarvis._piper_available = lambda: True
-    check("TTS auto выбирает Piper при наличии модели", jarvis._effective_tts_engine() == "piper")
-    jarvis._piper_available = lambda: False
-    check("TTS auto выбирает edge без Piper", jarvis._effective_tts_engine() == "edge")
+    jarvis_tts.TTS_ENGINE = "auto"
+    jarvis_tts._piper_available = lambda: True
+    check("TTS auto выбирает Piper при наличии модели",
+          jarvis_tts._effective_tts_engine() == "piper")
+    jarvis_tts._piper_available = lambda: False
+    check("TTS auto выбирает edge без Piper",
+          jarvis_tts._effective_tts_engine() == "edge")
 finally:
-    jarvis.TTS_ENGINE = _orig_tts_engine
-    jarvis._piper_available = _orig_piper_available
+    jarvis_tts.TTS_ENGINE = _orig_tts_engine
+    jarvis_tts._piper_available = _orig_piper_available
 
 check("Piper использует спокойный темп", 1.0 < jarvis.PIPER_LENGTH_SCALE <= 1.2)
 check("настройки тембра Piper доступны в UI",
@@ -898,7 +901,7 @@ check("короткие токены под смягчённый порог не
       jarvis.WAKE_ONSET_MIN_LEN >= 5)
 
 check("во время своей речи Джарвис слышит обращение и обрывает ответ",
-      "_interrupt_event.set()" in src and "speaking_now" in src)
+      "_state.interrupt_event.set()" in src and "speaking_now" in src)
 check("длинное эхо во время речи не транскрибируется",
       "BARGE_IN_MAX_AUDIO" in src and jarvis.BARGE_IN_MAX_AUDIO > 0)
 

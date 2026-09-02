@@ -23,6 +23,8 @@ __all__ = [
     "JARVIS_DIR", "CONFIG_PATH", "APP_VERSION", "UI_SETTING_KEYS",
     "_read_config_file", "_write_config_file", "_load_config",
     "_redirect_output_when_windowed", "_pythonw_exe",
+    "PAUSE_THRESHOLD", "SPEAK_COOLDOWN", "BARGE_IN_MAX_AUDIO",
+    "WAKE_COMMAND_WINDOW", "PHRASE_TIME_LIMIT", "FOLLOWUP_WINDOW", "FOLLOWUP_MODE",
 ]
 
 
@@ -164,3 +166,30 @@ def _pythonw_exe() -> str:
     exe = Path(sys.executable)
     noconsole = exe.with_name("pythonw.exe")
     return str(noconsole if noconsole.exists() else exe)
+
+
+# ── Тайминги речи ───────────────────────────────────────────────────────────
+# Нужны и ядру, и синтезу: синтез после реплики взводит окно продолжения,
+# а фильтр посторонней речи по этому же окну решает, ждать ли команду.
+
+PAUSE_THRESHOLD = float(os.getenv("JARVIS_PAUSE_THRESHOLD", "2.6"))
+# Experimental faster endpointing (not full streaming STT). On → shorter pause.
+if os.getenv("JARVIS_FAST_VAD", "off").lower() in {"1", "on", "true", "yes"}:
+    PAUSE_THRESHOLD = min(PAUSE_THRESHOLD, 1.35)
+
+SPEAK_COOLDOWN = float(os.getenv("JARVIS_SPEAK_COOLDOWN", "1.5"))
+
+# Пока Джарвис говорит, микрофон слышит в основном его самого. Но на своё имя он
+# обязан отзываться даже посреди собственной фразы, поэтому короткие реплики в это
+# время всё-таки распознаются и проверяются на обращение. Длинные — это его же
+# голос из колонок, их отбрасываем не тратя GPU.
+BARGE_IN_MAX_AUDIO = float(os.getenv("JARVIS_BARGE_IN_MAX_AUDIO", "6.0"))
+
+WAKE_COMMAND_WINDOW = float(os.getenv("JARVIS_WAKE_COMMAND_WINDOW", "10.0"))
+
+PHRASE_TIME_LIMIT = float(os.getenv("JARVIS_PHRASE_TIME_LIMIT", "45.0"))
+
+FOLLOWUP_WINDOW = float(os.getenv("JARVIS_FOLLOWUP_WINDOW", "15.0"))
+FOLLOWUP_MODE = os.getenv("JARVIS_FOLLOWUP_MODE", "strict").lower()
+if FOLLOWUP_MODE not in {"strict", "normal", "off"}:
+    FOLLOWUP_MODE = "strict"
