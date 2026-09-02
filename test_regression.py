@@ -699,9 +699,11 @@ check("текст сообщения вставляется безопасным
 
 
 section("приложения, TTS auto, диагностика и панель настроек")
-_orig_catalog = jarvis._build_app_catalog
+import jarvis_apps
+
+_orig_catalog = jarvis_apps._build_app_catalog
 try:
-    jarvis._build_app_catalog = lambda force=False: [
+    jarvis_apps._build_app_catalog = lambda force=False: [
         {"name": "Microsoft Word", "norm": "microsoft word", "target": r"C:\Word.exe"},
         {"name": "Steam", "norm": "steam", "target": r"C:\Steam.exe"},
         {"name": "Visual Studio Code", "norm": "visual studio code", "target": r"C:\Code.exe"},
@@ -710,7 +712,7 @@ try:
     check("Steam разрешается точно", jarvis.resolve_app("steam")["target"].endswith("Steam.exe"))
     check("VS Code разрешается по алиасу", jarvis.resolve_app("вс код")["name"] == "Visual Studio Code")
 finally:
-    jarvis._build_app_catalog = _orig_catalog
+    jarvis_apps._build_app_catalog = _orig_catalog
 
 check("open-any требует глагол", jarvis.extract_open_app_request("расскажи про spotify") is None)
 check("open-any извлекает любое приложение", jarvis.extract_open_app_request("открой программу spotify") == "spotify")
@@ -723,12 +725,12 @@ check("YouTube распознаётся как веб-сервис",
       jarvis.resolve_web_target("youtube") == "https://www.youtube.com/")
 check("русский Ютуб распознаётся как веб-сервис",
       jarvis.resolve_web_target("ютуб") == "https://www.youtube.com/")
-_orig_catalog = jarvis._build_app_catalog
+_orig_catalog = jarvis_apps._build_app_catalog
 _orig_startfile = jarvis.os.startfile
 _orig_which = jarvis.shutil.which
 try:
     _opened_targets = []
-    jarvis._build_app_catalog = lambda force=False: []
+    jarvis_apps._build_app_catalog = lambda force=False: []
     jarvis.os.startfile = lambda target: _opened_targets.append(target)
     jarvis.shutil.which = lambda command: None
     check("execute_system_command открывает YouTube URL",
@@ -739,7 +741,7 @@ try:
           jarvis.execute_system_command("definitely_missing_jarvis_target") is False and
           not _opened_targets)
 finally:
-    jarvis._build_app_catalog = _orig_catalog
+    jarvis_apps._build_app_catalog = _orig_catalog
     jarvis.os.startfile = _orig_startfile
     jarvis.shutil.which = _orig_which
 

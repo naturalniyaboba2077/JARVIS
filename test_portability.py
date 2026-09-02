@@ -97,11 +97,44 @@ def undefined_globals(path):
     пропущен NameError на `re` в jarvis_config._write_config_file.
     """
     text = io.open(path, encoding="utf-8").read()
+    tree = ast.parse(text)
     top = symtable.symtable(text, path, "exec")
-    known = set(top.get_identifiers()) | set(dir(builtins))
+
+    # Именно связывания на уровне модуля, а не symtable.get_identifiers():
+    # объявление `global X` внутри функции тоже попадает в identifiers, из-за
+    # чего осиротевшая глобаль выглядела бы определённой. Так был пропущен
+    # переезд _app_catalog_cache в jarvis_apps.
+    bound = set(dir(builtins)) | {
+        "__file__", "__name__", "__doc__", "__package__",
+        "__spec__", "__loader__", "__builtins__", "__path__",
+    }
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                bound |= {n.id for n in ast.walk(tgt) if isinstance(n, ast.Name)}
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            bound |= {n.id for n in ast.walk(node.target) if isinstance(n, ast.Name)}
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name != "*":
+                    bound.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, (ast.Try, ast.If, ast.For, ast.While, ast.With)):
+            for sub in ast.walk(node):
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    bound.add(sub.name)
+                elif isinstance(sub, ast.Assign):
+                    for tgt in sub.targets:
+                        bound |= {n.id for n in ast.walk(tgt) if isinstance(n, ast.Name)}
+                elif isinstance(sub, (ast.Import, ast.ImportFrom)):
+                    for alias in sub.names:
+                        if alias.name != "*":
+                            bound.add(alias.asname or alias.name.split(".")[0])
+    known = bound
 
     # `from X import *` приносит имена, которых в тексте модуля не видно.
-    for node in ast.walk(ast.parse(text)):
+    for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
             mod = importlib.import_module(node.module)
             known |= set(getattr(mod, "__all__", None) or dir(mod))
