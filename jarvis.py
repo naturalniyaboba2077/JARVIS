@@ -98,20 +98,15 @@ MAX_HISTORY = 4
 # file is personal data, so it is opt-in via config/env.
 SESSION_MEMORY = os.getenv("SESSION_MEMORY", "off").strip().lower() in ("on", "1", "true", "yes")
 
-_is_speaking = False
-_speaking_cooldown_until = 0.0
-_recognizer = None
 _interrupt_event = threading.Event()
-_threshold_before_speech = None
 
 
 # начали говорить — запоминаем порог микрофона, чтобы наш голос его не сбил
 def _mark_speaking():
     """Enter the speaking state and remember the mic threshold from before it."""
-    global _is_speaking, _threshold_before_speech
-    if not _is_speaking and _recognizer is not None:
-        _threshold_before_speech = _recognizer.energy_threshold
-    _is_speaking = True
+    if not _state.is_speaking and _state.recognizer is not None:
+        _state.threshold_before_speech = _state.recognizer.energy_threshold
+    _state.is_speaking = True
     # Звук пошёл — синтез уже позади, подпись под шаром должна это показывать.
     ui_sub("говорю…")
 
@@ -119,19 +114,17 @@ def _mark_speaking():
 # закончили говорить — ненадолго глушим микрофон, чтобы не слышать себя
 def _set_done_speaking():
     """Mark TTS as finished, start the mic cooldown, and open the follow-up window."""
-    global _is_speaking, _speaking_cooldown_until, _wake_active_until
-    global _threshold_before_speech
-    _is_speaking = False
-    _speaking_cooldown_until = time.time() + SPEAK_COOLDOWN
-    _wake_active_until = (time.time() + FOLLOWUP_WINDOW) if FOLLOWUP_MODE != "off" else 0.0
+    _state.is_speaking = False
+    _state.speaking_cooldown_until = time.time() + SPEAK_COOLDOWN
+    _state.wake_active_until = (time.time() + FOLLOWUP_WINDOW) if FOLLOWUP_MODE != "off" else 0.0
     # Пока Джарвис говорил, его собственный голос задирал порог микрофона через
     # dynamic_energy_threshold. Возвращаем то значение, что было до речи, иначе
     # он глохнет к пользователю после каждого своего ответа.
-    if _recognizer is not None and _threshold_before_speech is not None:
-        _recognizer.energy_threshold = min(_threshold_before_speech, 1500)
+    if _state.recognizer is not None and _state.threshold_before_speech is not None:
+        _state.recognizer.energy_threshold = min(_state.threshold_before_speech, 1500)
         jarvis_logger.debug(
-            f"[SPEAK] порог микрофона восстановлен: {_recognizer.energy_threshold:.0f}")
-    _threshold_before_speech = None
+            f"[SPEAK] порог микрофона восстановлен: {_state.recognizer.energy_threshold:.0f}")
+    _state.threshold_before_speech = None
     ui_state("idle")
     ui_sub("")   # вернуть подпись по умолчанию, даже если состояние не менялось
     jarvis_logger.debug(f"[SPEAK] закончил → cooldown {SPEAK_COOLDOWN:.1f} с, "
@@ -400,7 +393,6 @@ FOLLOWUP_MODE = os.getenv("JARVIS_FOLLOWUP_MODE", "strict").lower()
 if FOLLOWUP_MODE not in {"strict", "normal", "off"}:
     FOLLOWUP_MODE = "strict"
 
-_last_spoken_text = ""
 
 _BACKCHANNEL = frozenset({
     "ага", "угу", "ну", "хм", "хмм", "мм", "ммм", "эм", "э", "а", "ой",
@@ -417,10 +409,10 @@ _WHISPER_GHOST_RE = re.compile(
 # похоже ли услышанное на эхо того, что Джарвис только что сказал сам
 def _is_echo_of_last_spoken(t: str) -> bool:
     """True if the heard text looks like Jarvis's own last reply coming back."""
-    if not _last_spoken_text or not t:
+    if not _state.last_spoken_text or not t:
         return False
     heard = re.sub(r'\W+', ' ', t, flags=re.UNICODE).strip()
-    spoken = re.sub(r'\W+', ' ', _last_spoken_text.lower(), flags=re.UNICODE).strip()
+    spoken = re.sub(r'\W+', ' ', _state.last_spoken_text.lower(), flags=re.UNICODE).strip()
     if not heard or not spoken:
         return False
     ratio = SequenceMatcher(None, heard, spoken).ratio()
@@ -977,8 +969,7 @@ def _play_audio_bytes(data: bytes, suffix: str = ".mp3") -> bool:
 # озвучиваем ответ вслух
 def speak(text: str):
     """Speak text aloud. Interruptible — stops instantly on barge-in."""
-    global _last_spoken_text
-    _last_spoken_text = (text or "").strip()
+    _state.last_spoken_text = (text or "").strip()
     print(f"Jarvis: {text}")
     jarvis_logger.info(f"[SPEAK] {text!r}")
 
@@ -1045,7 +1036,6 @@ def speak_streaming(sentences_iter):
     - Plays the previous sentence's audio while the next is being generated
     - First word starts playing in ~300-500ms instead of waiting for full response
     """
-    global _last_spoken_text
     ui_state("speaking")
 
     jarvis_logger.info("[SPEAK:stream] start")
@@ -1097,7 +1087,7 @@ def speak_streaming(sentences_iter):
                 break
     finally:
         if spoken_parts:
-            _last_spoken_text = " ".join(spoken_parts)
+            _state.last_spoken_text = " ".join(spoken_parts)
         _set_done_speaking()
         prod_thread.join(timeout=2)
         jarvis_logger.info("[SPEAK:stream] done")
@@ -1719,7 +1709,7 @@ def get_jarvis_status() -> tuple[str, dict]:
     tts_ok = (_piper_available() if tts_engine == "piper" else edge_tts is not None)
     vault = bool(_get_vault())
     calendar = (JARVIS_DIR / "credentials.json").exists() or (JARVIS_DIR / "token.json").exists()
-    mic_threshold = getattr(_recognizer, "energy_threshold", None)
+    mic_threshold = getattr(_state.recognizer, "energy_threshold", None)
     data = {
         "version": APP_VERSION, "ollama": ollama, "cloud_key": cloud,
         "stt_engine": STT_ENGINE, "stt_ok": whisper,
@@ -2720,10 +2710,9 @@ def _audio_duration(audio) -> float:
 
 # сюда приходит распознанная с микрофона речь
 def callback(recognizer, audio):
-    global _wake_active_until
     try:
         phrase_start = time.time() - _audio_duration(audio)
-        speaking_now = _is_speaking or phrase_start < _speaking_cooldown_until
+        speaking_now = _state.is_speaking or phrase_start < _state.speaking_cooldown_until
 
         # Длинная запись во время его речи — это заведомо его же голос из колонок.
         # Не тратим на неё GPU вообще.
@@ -2750,7 +2739,7 @@ def callback(recognizer, audio):
             jarvis_logger.info(f"[STT] позвали во время речи → обрываю ответ: {text!r}")
 
 
-        in_wake_window = phrase_start < _wake_active_until
+        in_wake_window = phrase_start < _state.wake_active_until
 
         if not contains_wake_word(text_lower):
             if in_wake_window and text_lower.strip():
@@ -2758,7 +2747,7 @@ def callback(recognizer, audio):
                     print(f"[Не мне, игнорирую]: {text}")
                     jarvis_logger.debug(f"[STT] окно продолжения: не команда, пропуск: {text!r}")
                     return
-                _wake_active_until = 0.0
+                _state.wake_active_until = 0.0
                 print(f"\n[Команда без обращения] Вы: {text}")
                 ui_msg("user", text_lower)
                 jarvis_logger.info(f"[STT→CMD] команда в окне продолжения: {text_lower!r}")
@@ -2774,12 +2763,12 @@ def callback(recognizer, audio):
 
         ui_state("listening")
         if command_text:
-            _wake_active_until = 0.0
+            _state.wake_active_until = 0.0
             ui_msg("user", command_text)
             jarvis_logger.info(f"[STT→CMD] команда: {command_text!r}")
             command_queue.put(command_text)
         else:
-            _wake_active_until = time.time() + WAKE_COMMAND_WINDOW
+            _state.wake_active_until = time.time() + WAKE_COMMAND_WINDOW
             jarvis_logger.info(f"[STT→WAKE] только обращение → тихое окно "
                                f"{WAKE_COMMAND_WINDOW:.0f} с")
             command_queue.put("__WAKE__")
@@ -2802,7 +2791,6 @@ import jarvis_ui as _ui
 
 # Окно создаёт main(), а пользуется им модуль окна, поэтому ссылка
 # должна быть одна на всех — только через атрибут модуля.
-_wake_active_until = 0.0
 _microphone_names_cache = ()
 
 
@@ -2942,11 +2930,9 @@ def _select_mic():
 
 # запуск: микрофон, фоновый слушатель и главный цикл
 def run_assistant():
-    global _wake_active_until
-    global _recognizer
     pygame.mixer.init()
     recognizer = sr.Recognizer()
-    _recognizer = recognizer
+    _state.recognizer = recognizer
     stop_listening = None
     jarvis_logger.info(
         f"[STARTUP] Джарвис запущен — "
@@ -3051,7 +3037,7 @@ def run_assistant():
                 command = command_queue.get(timeout=0.4)
 
                 if isinstance(command, tuple) and command and command[0] == "__HOTKEY__":
-                    _wake_active_until = time.time() + float(command[1])
+                    _state.wake_active_until = time.time() + float(command[1])
                     ui_state("listening")
                     print(f"[Hotkey: жду команду {float(command[1]):.0f} с]")
                     continue

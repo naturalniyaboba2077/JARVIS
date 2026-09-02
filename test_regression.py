@@ -26,6 +26,11 @@ sys.modules.setdefault("pyautogui", _mock_pyautogui)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jarvis
+import jarvis_apps
+import jarvis_llm
+import jarvis_state
+import jarvis_store
+import jarvis_telegram
 
 
 _results = []
@@ -41,8 +46,8 @@ def section(title):
 
 
 section("BUG 1: _set_done_speaking() recursed infinitely → Jarvis went deaf")
-jarvis._is_speaking = True
-jarvis._speaking_cooldown_until = 0.0
+jarvis_state.is_speaking = True
+jarvis_state.speaking_cooldown_until = 0.0
 try:
     jarvis._set_done_speaking()
     check("_set_done_speaking() does not raise RecursionError", True)
@@ -50,10 +55,10 @@ except RecursionError as e:
     check("_set_done_speaking() does not raise RecursionError", False, str(e))
 
 check("_set_done_speaking() actually clears _is_speaking",
-      jarvis._is_speaking is False,
-      f"_is_speaking={jarvis._is_speaking}")
+      jarvis_state.is_speaking is False,
+      f"_is_speaking={jarvis_state.is_speaking}")
 check("_set_done_speaking() arms the mic cooldown",
-      jarvis._speaking_cooldown_until > 0)
+      jarvis_state.speaking_cooldown_until > 0)
 
 
 section("BUG 2: substring matching hijacked ordinary speech")
@@ -193,9 +198,6 @@ import queue as _q
 import time as _t
 
 
-import jarvis_llm
-
-
 def _run_llm(local_engine, cloud_engine, deadline=0.3):
     """Drive the REAL _llm_deltas with stubbed engines."""
     saved = (jarvis_llm._ollama_deltas, jarvis_llm._cloud_deltas,
@@ -287,7 +289,7 @@ check("СТАРОЕ поведение отбрасывало команду (п
 check("НОВОЕ поведение принимает команду (окно от начала фразы)",
       (_callback_at - _spoke_len - _stt) < _window_until)
 check("callback берёт phrase_start, а не time.time()",
-      "in_wake_window = phrase_start < _wake_active_until" in src)
+      "in_wake_window = phrase_start < _state.wake_active_until" in src)
 check("phrase_start вычисляется ДО STT",
       src.index("phrase_start = time.time() - _audio_duration(audio)")
       < src.index("text = transcribe_speech(recognizer, audio)"))
@@ -569,13 +571,13 @@ check("окно продолжения диалога = 15 с", jarvis.FOLLOWUP_
       f"FOLLOWUP_WINDOW={jarvis.FOLLOWUP_WINDOW}")
 
 _t_before = _t.time()
-jarvis._is_speaking = True
+jarvis_state.is_speaking = True
 jarvis._set_done_speaking()
 check("после речи окно продолжения взведено (~15 с)",
-      jarvis._wake_active_until >= _t_before + 14.0,
-      f"осталось {jarvis._wake_active_until - _t_before:.1f} с")
+      jarvis_state.wake_active_until >= _t_before + 14.0,
+      f"осталось {jarvis_state.wake_active_until - _t_before:.1f} с")
 check("mic-cooldown всё ещё ставится (защита от самопрослушки)",
-      jarvis._speaking_cooldown_until > _t_before)
+      jarvis_state.speaking_cooldown_until > _t_before)
 
 for _stray in ["ага", "угу", "хм", "ну", "э", "а", "вот",
                "продолжение следует...", "Субтитры сделал DimaTorzok",
@@ -681,8 +683,6 @@ try:
 finally:
     jarvis.search_web = _orig_search_web
 
-import jarvis_store
-
 _orig_load_todo = jarvis_store.load_todo
 _orig_save_todo = jarvis_store.save_todo
 _dupes = [{"task": "тест", "done": False}, {"task": "тест", "done": False}]
@@ -705,8 +705,6 @@ check("текст сообщения вставляется безопасным
 
 
 section("приложения, TTS auto, диагностика и панель настроек")
-import jarvis_apps
-
 _orig_catalog = jarvis_apps._build_app_catalog
 try:
     jarvis_apps._build_app_catalog = lambda force=False: [
@@ -780,11 +778,11 @@ check("API-ключ не возвращается в UI", "OPENROUTER_API_KEY_SE
 check("версия приложения задана", jarvis.APP_VERSION.startswith("1."),
       f"APP_VERSION={jarvis.APP_VERSION}")
 
-_old_spoken = jarvis._last_spoken_text
+_old_spoken = jarvis_state.last_spoken_text
 _old_followup_mode = jarvis.FOLLOWUP_MODE
 try:
     jarvis.FOLLOWUP_MODE = "strict"
-    jarvis._last_spoken_text = "Открываю браузер, сэр. Выполняю команду."
+    jarvis_state.last_spoken_text = "Открываю браузер, сэр. Выполняю команду."
     check("эхо последнего ответа отбрасывается",
           jarvis._is_stray_speech("Открываю браузер сэр выполняю команду"))
     check("новая команда в strict follow-up принимается",
@@ -792,7 +790,7 @@ try:
     check("посторонняя фраза в strict follow-up отбрасывается",
           jarvis._is_stray_speech("мы потом пойдем в магазин"))
 finally:
-    jarvis._last_spoken_text = _old_spoken
+    jarvis_state.last_spoken_text = _old_spoken
     jarvis.FOLLOWUP_MODE = _old_followup_mode
 
 check("музыка не делает слепой клик по центру экрана",
@@ -850,9 +848,6 @@ check("конкретный экспорт Telegram распознаётся л�
 check("список Telegram-чатов распознаётся локально",
       jarvis.detect_telegram_intent_from_text("покажи мои чаты в телеграме") == "[TG:CHATS]")
 
-import jarvis_state
-import jarvis_telegram
-
 _old_pending_tg = jarvis_state.pending_telegram_send
 _old_tg_send = jarvis_telegram.telegram_send_message
 try:
@@ -907,15 +902,15 @@ check("во время своей речи Джарвис слышит обра�
 check("длинное эхо во время речи не транскрибируется",
       "BARGE_IN_MAX_AUDIO" in src and jarvis.BARGE_IN_MAX_AUDIO > 0)
 
-_saved_spoken = jarvis._last_spoken_text
+_saved_spoken = jarvis_state.last_spoken_text
 try:
-    jarvis._last_spoken_text = "Открываю браузер, сэр."
+    jarvis_state.last_spoken_text = "Открываю браузер, сэр."
     check("эхо собственной фразы распознаётся",
           jarvis._is_echo_of_last_spoken("открываю браузер сэр"))
     check("нормальная команда не считается эхом",
           not jarvis._is_echo_of_last_spoken("поставь таймер на десять минут"))
 finally:
-    jarvis._last_spoken_text = _saved_spoken
+    jarvis_state.last_spoken_text = _saved_spoken
 
 
 section("BUG 21: v1.1 features — session / windows / remind / files / mail hooks")
