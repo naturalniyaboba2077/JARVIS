@@ -170,8 +170,12 @@ section("В рантайме: ядро при заблокированных Win
 _BLOCKED_ROOTS = {"pyautogui", "pycaw", "comtypes",
                   "screen_brightness_control", "pygetwindow", "keyboard"}
 
+# Статическая часть выше импортирует модули ядра, чтобы разрешить звёздочные
+# импорты. Их надо выгрузить, иначе они останутся в кэше уже подхватившими
+# настоящие Windows-библиотеки, и симуляция ничего не проверит.
 for _m in list(sys.modules):
-    if _m.split(".")[0] in _BLOCKED_ROOTS:
+    _root = _m.split(".")[0]
+    if _root in _BLOCKED_ROOTS or _root.startswith("jarvis"):
         del sys.modules[_m]
 
 _real_import = builtins.__import__
