@@ -142,9 +142,15 @@ def undefined_globals(path):
     missing = []
 
     def walk(table, scope):
+        module_level = table.get_type() == "module"
         for sym in table.get_symbols():
             name = sym.get_name()
-            if sym.is_global() and name not in known:
+            # На уровне модуля имя не бывает "global" — там оно локальное,
+            # поэтому проверяем отдельно: так был пропущен threading.Lock()
+            # в jarvis_telegram, падавший прямо при импорте.
+            unresolved = (sym.is_global() or
+                          (module_level and sym.is_referenced() and not sym.is_assigned()))
+            if unresolved and name not in known:
                 missing.append("%s -> %s" % (scope, name))
         for child in table.get_children():
             walk(child, scope + "." + child.get_name())

@@ -844,25 +844,28 @@ check("конкретный экспорт Telegram распознаётся л�
 check("список Telegram-чатов распознаётся локально",
       jarvis.detect_telegram_intent_from_text("покажи мои чаты в телеграме") == "[TG:CHATS]")
 
-_old_pending_tg = jarvis.pending_telegram_send
-_old_tg_send = jarvis.telegram_send_message
+import jarvis_state
+import jarvis_telegram
+
+_old_pending_tg = jarvis_state.pending_telegram_send
+_old_tg_send = jarvis_telegram.telegram_send_message
 try:
-    jarvis.pending_telegram_send = None
-    _confirmation = jarvis.telegram_request_send("Иван", "Буду через час")
+    jarvis_state.pending_telegram_send = None
+    _confirmation = jarvis_telegram.telegram_request_send("Иван", "Буду через час")
     check("Telegram SEND сначала просит подтверждение",
-          jarvis.pending_telegram_send is not None and "Подтвердите" in _confirmation)
+          jarvis_state.pending_telegram_send is not None and "Подтвердите" in _confirmation)
     check("короткое подтверждение не отбрасывается follow-up фильтром",
           not jarvis._is_stray_speech("подтверждаю"))
-    jarvis.telegram_send_message = lambda chat, text: f"sent:{chat}:{text}"
+    jarvis_telegram.telegram_send_message = lambda chat, text: f"sent:{chat}:{text}"
     check("сообщение отправляется только после подтверждения",
-          jarvis.telegram_confirm_pending("подтверждаю") == "sent:Иван:Буду через час")
-    check("pending очищается после отправки", jarvis.pending_telegram_send is None)
-    jarvis.telegram_request_send("Иван", "Отмена")
+          jarvis_telegram.telegram_confirm_pending("подтверждаю") == "sent:Иван:Буду через час")
+    check("pending очищается после отправки", jarvis_state.pending_telegram_send is None)
+    jarvis_telegram.telegram_request_send("Иван", "Отмена")
     check("отправку Telegram можно отменить",
-          "отменена" in jarvis.telegram_confirm_pending("отмена").lower())
+          "отменена" in jarvis_telegram.telegram_confirm_pending("отмена").lower())
 finally:
-    jarvis.pending_telegram_send = _old_pending_tg
-    jarvis.telegram_send_message = _old_tg_send
+    jarvis_state.pending_telegram_send = _old_pending_tg
+    jarvis_telegram.telegram_send_message = _old_tg_send
 
 check("Telegram API Hash не возвращается из панели открытым текстом",
       "TELEGRAM_API_HASH_SET" in src and
