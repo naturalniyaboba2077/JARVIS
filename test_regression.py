@@ -30,6 +30,7 @@ import jarvis_apps
 import jarvis_llm
 import jarvis_state
 import jarvis_store
+import project_agent
 import jarvis_tts
 import jarvis_telegram
 
@@ -978,6 +979,48 @@ except SyntaxError as e:
 
 check("не осталось подстрочных матчеров команд",
       "any(w in cmd_lower for w in [" not in src)
+
+
+section("Правки агента версионируются и откатываются голосом")
+
+import jarvis_fileops
+
+_calls = []
+_orig_resolve = project_agent._resolve_project
+_orig_undo = jarvis_fileops.undo_last
+_orig_hist = jarvis_fileops.list_history
+try:
+    project_agent._resolve_project = lambda name: Path("/фиктивный") / name
+    jarvis_fileops.undo_last = lambda root: _calls.append(("undo", root.name)) or "откачено"
+    jarvis_fileops.list_history = lambda root, limit=10: _calls.append(("list", root.name)) or "история"
+
+    check("«отмени последнюю правку» откатывает",
+          jarvis.handle_local_feature_command(
+              "отмени последнюю правку в проекте Jarvis") == "откачено")
+    check("«покажи правки» показывает историю",
+          jarvis.handle_local_feature_command(
+              "покажи правки в проекте Jarvis") == "история")
+    check("имя проекта извлечено верно", _calls and _calls[0][1] == "Jarvis", str(_calls))
+    check("обычная команда не перехватывается",
+          jarvis.handle_local_feature_command("отмени таймер") != "откачено")
+
+    project_agent._resolve_project = lambda name: (_ for _ in ()).throw(
+        ValueError("Проект не найден в разрешённых папках"))
+    _answer = jarvis.handle_local_feature_command("отмени правку в проекте выдумка")
+    check("незнакомый проект объясняется, а не падает",
+          isinstance(_answer, str) and "не найден" in _answer, str(_answer))
+finally:
+    project_agent._resolve_project = _orig_resolve
+    jarvis_fileops.undo_last = _orig_undo
+    jarvis_fileops.list_history = _orig_hist
+
+check("запись агента идёт через версионирование",
+      "write_versioned" in module_src("project_agent.py"))
+check("агенту запрещено рекурсивное удаление",
+      "рекурсивное удаление" in module_src("project_agent.py"))
+check("агент работает и вне Windows", '"/bin/sh"' in module_src("project_agent.py"))
+check("история правок не уходит в гит",
+      "file_history/" in Path(".gitignore").read_text(encoding="utf-8"))
 
 
 passed = sum(1 for _, ok, _ in _results if ok)

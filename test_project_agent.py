@@ -4,6 +4,12 @@ import os
 import tempfile
 from pathlib import Path
 
+import shutil
+
+_HISTORY = Path(tempfile.mkdtemp(prefix="jarvis_agent_history_"))
+os.environ["JARVIS_FILE_HISTORY"] = str(_HISTORY)
+
+import jarvis_fileops
 import project_agent
 
 
@@ -41,10 +47,18 @@ with tempfile.TemporaryDirectory() as tmp:
             project, "read_file", {"path": "app.py"}))
         result = project_agent._execute(
             project, "write_file", {"path": "app.py", "content": "print('new')\n"})
-        check("агент пишет файл", "Записано" in result and "new" in
+        check("агент пишет файл", "Перезаписан" in result and "new" in
               (project / "app.py").read_text(encoding="utf-8"))
+        check("правка попала в историю",
+              "app.py" in project_agent._execute(project, "list_changes", {}))
+        check("правка агента откатывается",
+              "app.py" in jarvis_fileops.undo_last(project) and
+              "old" in (project / "app.py").read_text(encoding="utf-8"))
         check("разрушительная команда блокируется", "заблокирована" in
               project_agent._execute(project, "run_command", {"command": "rm -rf ."}))
+        check("разрушительный git блокируется", "заблокирована" in
+              project_agent._execute(project, "run_command",
+                                     {"command": "git reset --hard HEAD~5"}))
         check("проверочная команда выполняется", "exit=0" in
               project_agent._execute(project, "run_command", {
                   "command": "python -c \"print('ok')\""}))

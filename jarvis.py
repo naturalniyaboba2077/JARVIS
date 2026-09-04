@@ -46,6 +46,7 @@ from googleapiclient.discovery import build
 
 import jarvis_features as _feat
 import jarvis_platform as _plat
+import jarvis_fileops as _fileops
 import project_agent as _project_agent
 import jarvis_state as _state
 
@@ -161,6 +162,20 @@ def handle_local_feature_command(text: str, last_reply: str = "", speak_fn=None)
         except Exception as exc:
             jarvis_logger.exception("[PROJECT_AGENT] failed")
             return f"Проектный агент завершился с ошибкой: {type(exc).__name__}: {exc}"
+    # Правки агента версионируются, поэтому их можно отменить голосом.
+    file_match = re.match(
+        r'^(?P<verb>отмени|откати|покажи|какие)\s+(?:последн\w+\s+)?'
+        r'(?:правк\w+|изменени\w+)\s+(?:в\s+)?проект\w*\s+(?P<project>.+?)\s*$',
+        (text or "").strip(), re.IGNORECASE)
+    if file_match:
+        try:
+            root = _project_agent._resolve_project(file_match.group("project"))
+        except ValueError as exc:
+            return f"{exc}, сэр."
+        if file_match.group("verb").lower() in {"отмени", "откати"}:
+            return _fileops.undo_last(root)
+        return _fileops.list_history(root)
+
     result = _feat.handle_feature_command(text, last_reply=last_reply or "")
     if result == "__FOCUS_MODE__":
         set_volume(0)

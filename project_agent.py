@@ -1,15 +1,44 @@
-"""Small tool-using coding agent for projects explicitly allowed by the user."""
+"""Проектный агент: правит код в явно разрешённых папках.
+
+Работает без присмотра, поэтому ограничений у него больше, чем у команд,
+которые человек отдаёт голосом. Любая запись версионируется и откатывается
+(jarvis_fileops), рекурсивное удаление и разрушительные операции git ему
+запрещены, а выйти за корень проекта он не может.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
+from jarvis_fileops import MAX_FILE_BYTES, list_history, write_versioned
+from jarvis_safety import is_code_safe
 
-MAX_FILE_BYTES = 300_000
 MAX_TOOL_STEPS = 12
+
+# Агенту запрещено и то, что человеку разрешено: он не переспросит и не
+# заметит, что снёс каталог, с которым только что работал.
+_AGENT_FORBIDDEN = (
+    (r"\brm\s+-[rf]{1,2}\b|remove-item\b[^\n]*-recurse|\brd\s+/s\b|\bdel\s+/s\b",
+     "рекурсивное удаление"),
+    (r"git\s+(?:reset\s+--hard|clean\s+-[a-z]*f|push\s+--force)",
+     "разрушительная операция git"),
+)
+
+
+def _command_safe(command: str) -> tuple[bool, str]:
+    """Общий анти-вайп плюс дополнительные запреты для автономной работы."""
+    ok, reason = is_code_safe(command)
+    if not ok:
+        return False, reason
+    low = command.lower()
+    for pattern, why in _AGENT_FORBIDDEN:
+        if re.search(pattern, low):
+            return False, why
+    return True, ""
 
 
 def _roots() -> list[Path]:
@@ -66,6 +95,7 @@ def _tools() -> list[dict]:
             "path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
         tool("run_command", "Запустить проверочную команду в корне проекта", {
             "command": {"type": "string"}}, ["command"]),
+        tool("list_changes", "Показать свои правки в этом проекте", {}),
     ]
 
 
@@ -102,19 +132,19 @@ def _execute(root: Path, name: str, args: dict) -> str:
         return (proc.stdout or proc.stderr or "Совпадений нет")[:20_000]
     if name == "write_file":
         path = _inside(root, args["path"])
-        content = args["content"]
-        if len(content.encode("utf-8")) > MAX_FILE_BYTES:
-            return "Содержимое слишком большое"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return f"Записано: {path.relative_to(root)}"
+        return write_versioned(root, path, args["content"])
+    if name == "list_changes":
+        return list_history(root)
     if name == "run_command":
         command = args["command"].strip()
-        blocked = ("rm -rf", "format ", "diskpart", "bcdedit", "remove-item -recurse")
-        if any(token in command.lower() for token in blocked):
-            return "Разрушительная команда заблокирована"
+        ok, reason = _command_safe(command)
+        if not ok:
+            return f"Разрушительная команда заблокирована: {reason}"
+        # На сервере ядро крутится под Linux, где powershell отсутствует.
+        argv = (["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+                if os.name == "nt" else ["/bin/sh", "-c", command])
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            argv,
             cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return f"exit={proc.returncode}\n{(proc.stdout + proc.stderr)[:20_000]}"

@@ -19,6 +19,7 @@ piper_models/
 
 # ── Generated / runtime ──
 logs/
+file_history/
 tts_cache/
 __pycache__/
 *.pyc
