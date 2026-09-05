@@ -1,44 +1,30 @@
 """Проектный агент: правит код в явно разрешённых папках.
 
-Работает без присмотра, поэтому ограничений у него больше, чем у команд,
-которые человек отдаёт голосом. Любая запись версионируется и откатывается
-(jarvis_fileops), рекурсивное удаление и разрушительные операции git ему
-запрещены, а выйти за корень проекта он не может.
+Записи проходят через транзакционный jarvis_fileops. Проверки compile/check
+компилируют Python в памяти без исполнения. Произвольный shell и запуск тестов
+без отдельно проверенного изолированного backend запрещены. Это ограничение
+инструментов, не sandbox всего процесса; детали — jarvis_project_checks.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
-import subprocess
 from pathlib import Path
 
-from jarvis_fileops import MAX_FILE_BYTES, list_history, write_versioned
-from jarvis_safety import is_code_safe
+from jarvis_fileops import checked_path, list_history, read_project_bytes, write_versioned
+from jarvis_project_checks import iter_files, parse_check, run_check, search_text
 
 MAX_TOOL_STEPS = 12
 
-# Агенту запрещено и то, что человеку разрешено: он не переспросит и не
-# заметит, что снёс каталог, с которым только что работал.
-_AGENT_FORBIDDEN = (
-    (r"\brm\s+-[rf]{1,2}\b|remove-item\b[^\n]*-recurse|\brd\s+/s\b|\bdel\s+/s\b",
-     "рекурсивное удаление"),
-    (r"git\s+(?:reset\s+--hard|clean\s+-[a-z]*f|push\s+--force)",
-     "разрушительная операция git"),
-)
-
 
 def _command_safe(command: str) -> tuple[bool, str]:
-    """Общий анти-вайп плюс дополнительные запреты для автономной работы."""
-    ok, reason = is_code_safe(command)
-    if not ok:
-        return False, reason
-    low = command.lower()
-    for pattern, why in _AGENT_FORBIDDEN:
-        if re.search(pattern, low):
-            return False, why
-    return True, ""
+    """Compatibility predicate for the non-executing check command grammar."""
+    try:
+        parse_check(command)
+        return True, ""
+    except ValueError as exc:
+        return False, str(exc)
 
 
 def _roots() -> list[Path]:
@@ -72,10 +58,7 @@ def _resolve_project(project: str) -> Path:
 
 
 def _inside(root: Path, relative: str) -> Path:
-    target = (root / (relative or ".")).resolve()
-    if target != root and root not in target.parents:
-        raise ValueError("Выход за границы проекта запрещён")
-    return target
+    return checked_path(root, relative)
 
 
 def _tools() -> list[dict]:
@@ -89,11 +72,12 @@ def _tools() -> list[dict]:
             "path": {"type": "string"}, "limit": {"type": "integer"}}),
         tool("read_file", "Прочитать текстовый файл", {
             "path": {"type": "string"}}, ["path"]),
-        tool("search_text", "Найти текст во всех файлах через ripgrep", {
+        tool("search_text", "Буквальный поиск текста в файлах, без регулярных выражений", {
             "query": {"type": "string"}, "path": {"type": "string"}}, ["query"]),
         tool("write_file", "Создать или полностью заменить текстовый файл", {
             "path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
-        tool("run_command", "Запустить проверочную команду в корне проекта", {
+        tool("run_command", "Проверить синтаксис: compile/check [path], python -m py_compile file.py. "
+             "Код и тесты не исполняются; произвольные shell/git-команды запрещены.", {
             "command": {"type": "string"}}, ["command"]),
         tool("list_changes", "Показать свои правки в этом проекте", {}),
     ]
@@ -105,11 +89,8 @@ def _execute(root: Path, name: str, args: dict) -> str:
         limit = max(1, min(int(args.get("limit", 200)), 500))
         if not base.exists():
             return "Путь не найден"
-        ignored = {".git", ".venv", "node_modules", "__pycache__", "dist", "build"}
         items = []
-        for path in base.rglob("*"):
-            if any(part in ignored for part in path.parts):
-                continue
+        for path in iter_files(root, base):
             items.append(str(path.relative_to(root)).replace("\\", "/"))
             if len(items) >= limit:
                 break
@@ -118,36 +99,16 @@ def _execute(root: Path, name: str, args: dict) -> str:
         path = _inside(root, args["path"])
         if not path.is_file():
             return "Файл не найден"
-        if path.stat().st_size > MAX_FILE_BYTES:
-            return "Файл слишком большой"
-        return path.read_text(encoding="utf-8", errors="replace")
+        return read_project_bytes(root, path).decode("utf-8", errors="replace")
     if name == "search_text":
-        base = _inside(root, args.get("path", "."))
-        proc = subprocess.run(
-            ["rg", "-n", "--hidden", "-g", "!.git/**", "-g", "!.venv/**",
-             "-g", "!node_modules/**", args["query"], str(base)],
-            cwd=root, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=20,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return (proc.stdout or proc.stderr or "Совпадений нет")[:20_000]
+        return search_text(root, args["query"], args.get("path", "."))
     if name == "write_file":
         path = _inside(root, args["path"])
         return write_versioned(root, path, args["content"])
     if name == "list_changes":
         return list_history(root)
     if name == "run_command":
-        command = args["command"].strip()
-        ok, reason = _command_safe(command)
-        if not ok:
-            return f"Разрушительная команда заблокирована: {reason}"
-        # На сервере ядро крутится под Linux, где powershell отсутствует.
-        argv = (["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-                if os.name == "nt" else ["/bin/sh", "-c", command])
-        proc = subprocess.run(
-            argv,
-            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return f"exit={proc.returncode}\n{(proc.stdout + proc.stderr)[:20_000]}"
+        return run_check(root, args["command"])
     return "Неизвестный инструмент"
 
 
@@ -158,8 +119,10 @@ def run_project_agent(client, model: str, project: str, task: str) -> str:
         "role": "system",
         "content": (
             "Ты работаешь как самостоятельный senior-разработчик внутри одного проекта. "
-            "Сначала изучи код, затем внеси минимальные изменения, запусти подходящие тесты "
-            "и кратко отчитайся. Не выходи за корень проекта. Не удаляй проект и системные файлы."
+            "Сначала изучи код, затем внеси минимальные изменения и проверь синтаксис командой "
+            "compile или check. Эти проверки не исполняют код. Тесты и shell недоступны без "
+            "изолированного backend; не утверждай, что тесты прошли. Кратко отчитайся. "
+            "Не выходи за корень проекта. Не удаляй проект и системные файлы."
         )}, {
         "role": "user", "content": f"Проект: {root.name}\nЗадача: {task}"
     }]

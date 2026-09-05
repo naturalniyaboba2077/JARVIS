@@ -15,6 +15,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -171,13 +173,14 @@ def set_brightness(level: int) -> str:
 
 # похоже ли услышанное на эхо того, что Джарвис только что сказал сам
 
-def set_volume(level: int):
+def set_volume(level: int) -> bool:
     """Set system volume level (0-100)."""
     ok, note = _plat.set_master_volume(level)
     if ok:
         print(f"Volume set to {max(0, min(100, level))}%")
     else:
         print(f"Error setting volume: {note}")
+    return ok
 
 def get_volume() -> int:
     """Return current system volume as 0-100 (or -1 on error)."""
@@ -190,15 +193,15 @@ def nudge_volume(delta: int) -> int:
     if cur < 0:
         return -1
     new = max(0, min(100, cur + delta))
-    set_volume(new)
-    return new
+    return new if set_volume(new) else -1
 
 
-def media_control(action: str):
+def media_control(action: str) -> bool:
     """Control media via keyboard emulation."""
     ok, note = _plat.press_media_key(action)
     if not ok:
         print(f"Media control unavailable: {note}")
+    return ok
 
 def search_web(query: str) -> str:
     """Search the web and return a short, speakable summary."""
@@ -243,18 +246,28 @@ def search_web(query: str) -> str:
         except Exception:
             return "Не удалось связаться с поиском, сэр."
 
-def type_text(text: str):
+def type_text(text: str) -> bool:
     """Type text into the active window using the clipboard to support Russian."""
     print(f"Печатаю текст: {text}")
+    original_clipboard = None
     try:
         original_clipboard = pyperclip.paste()
         pyperclip.copy(text)
         time.sleep(0.1)
-        _plat.paste_from_clipboard()
+        ok, note = _plat.paste_from_clipboard()
         time.sleep(0.1)
-        pyperclip.copy(original_clipboard)
+        if not ok:
+            print(f"Ghost Writer unavailable: {note}")
+        return ok
     except Exception as e:
         print(f"Ghost Writer error: {e}")
+        return False
+    finally:
+        if original_clipboard is not None:
+            try:
+                pyperclip.copy(original_clipboard)
+            except Exception as error:
+                jarvis_logger.warning("[TYPE] clipboard restore failed: %s", error)
 
 def execute_system_command(cmd: str) -> bool:
     """Open a known target or resolve any installed Windows application."""
@@ -431,22 +444,79 @@ def play_yandex_music(query: str, auto_play: bool = True):
         return "Открываю музыку, сэр. Если трек не запустится, нажмите воспроизведение вручную."
     return "Открываю Яндекс Музыку, сэр."
 
-def execute_python_code(code: str) -> str:
+def _stop_python_process(proc) -> None:
+    """Stop only this command's process tree; never target unrelated Python."""
+    try:
+        children = psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:
+        children = []
+    for child in reversed(children):
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait(timeout=3)
+
+
+def execute_python_code(code: str, timeout: float = 60, cancel_event=None) -> str:
+    """Return the actual outcome of bounded, cancellable user code execution.
+
+    A child process prevents a failed/infinite script from wedging the assistant.
+    It is NOT a sandbox: ordinary user code retains the existing anti-wipe policy.
+    """
     ok, reason = is_code_safe(code)
     if not ok:
         print(f"[ANTI-WIPE] blocked python: {reason}")
         jarvis_logger.warning(f"[ANTI-WIPE] заблокирован Python: {reason} :: {(code or '')[:120]!r}")
         return "Не могу трогать систему или удалять проекты, сэр."
 
-    print("--- Выполняю сгенерированный код ---")
-    print(code)
-    print("------------------------------------")
-
-    env = {"os": os, "subprocess": subprocess, "time": time, "pyautogui": _plat.pyautogui}
+    cancel = cancel_event if cancel_event is not None else _state.interrupt_event
+    if cancel.is_set():
+        return "Выполнение прервано, сэр."
+    prelude = (
+        "import os, subprocess, time, sys\n"
+        "try:\n    import pyautogui\n"
+        "except Exception:\n    pyautogui = None\n"
+        "exec(compile(sys.stdin.read(), '<jarvis-command>', 'exec'))\n"
+    )
+    proc = None
     try:
-        exec(code, env)
-        return "Команда выполнена, сэр."
+        # A pipe write could block before the child finishes importing modules,
+        # bypassing our timeout for code larger than the pipe buffer.
+        with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as output:
+            source.write((code or "").encode("utf-8"))
+            source.seek(0)
+            proc = subprocess.Popen(
+                [sys.executable, "-X", "utf8", "-c", prelude],
+                cwd=JARVIS_DIR, stdin=source, stdout=output,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            deadline = time.monotonic() + timeout
+            while proc.poll() is None:
+                if cancel.is_set():
+                    _stop_python_process(proc)
+                    return "Выполнение прервано, сэр."
+                if time.monotonic() >= deadline:
+                    _stop_python_process(proc)
+                    return "Python выполнялся слишком долго, сэр; процесс остановлен."
+                cancel.wait(min(0.05, max(0, deadline - time.monotonic())))
+            # Read a bounded tail, including the final exception message.
+            size = output.seek(0, os.SEEK_END)
+            output.seek(max(0, size - 4096))
+            tail = output.read(4096).decode("utf-8", errors="replace").strip()
+            if proc.returncode:
+                detail = tail.splitlines()[-1] if tail else f"код {proc.returncode}"
+                return f"Ошибка при выполнении Python: {detail[:300]}"
+            return "Команда выполнена, сэр." + (f" {tail[:300]}" if tail else "")
     except Exception as e:
-        print(f"Ошибка выполнения кода: {e}")
         jarvis_logger.error(f"[EXECUTE_PYTHON] ошибка: {e}")
         return f"Ошибка при выполнении: {e}"
+    finally:
+        if proc is not None:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
+            if proc.poll() is None:
+                _stop_python_process(proc)

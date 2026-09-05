@@ -214,8 +214,10 @@ def test_tag_parsing():
 
     def mock_exec(cmd):
         actions_taken.append(f"OPEN:{cmd}")
+        return True
     def mock_play(q, auto_play):
         actions_taken.append(f"MUSIC:{q or 'OPEN'}")
+        return "Открываю музыку, сэр."
 
     jarvis.execute_system_command = mock_exec
     jarvis.play_yandex_music = mock_play
@@ -247,7 +249,7 @@ def test_tag_parsing():
         actions_taken.clear()
         result = parse_and_execute_tags("Конечно, сэр.", "открой браузер")
         check("Intent fallback triggers on no-tag reply", any("browser" in a for a in actions_taken))
-        check("Intent fallback overrides LLM reply", result == "Выполняю, сэр.")
+        check("Intent fallback reports actual opening", result == "Открываю, сэр.")
 
         actions_taken.clear()
         result = parse_and_execute_tags(
@@ -263,7 +265,7 @@ def test_tag_parsing():
 
         actions_taken.clear()
         result = parse_and_execute_tags("", "")
-        check("Empty reply filled with default", result == "Выполняю, сэр.")
+        check("Empty reply does not claim an action succeeded", result == "Не получил ответа, сэр.")
 
         actions_taken.clear()
         ran = []

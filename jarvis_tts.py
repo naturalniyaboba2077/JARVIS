@@ -40,7 +40,7 @@ except ImportError:
 __all__ = [
     "TTS_ENGINE", "EDGE_VOICE", "PIPER_VOICE", "PIPER_MODEL_PATH",
     "PIPER_LENGTH_SCALE", "PIPER_NOISE_SCALE", "PIPER_NOISE_W_SCALE",
-    "INSTANT_PHRASES", "speak", "speak_streaming", "generate_speech",
+    "INSTANT_PHRASES", "speak", "speak_notification", "speak_streaming", "generate_speech",
     "tts_to_bytes", "prewarm_tts_cache",
     "_mark_speaking", "_set_done_speaking", "_effective_tts_engine",
     "_piper_available", "_clean_tts_text", "_cache_ext", "_run_edge_tts_sync",
@@ -50,6 +50,9 @@ __all__ = [
 
 
 TTS_ENGINE = os.getenv("TTS_ENGINE", "auto").lower()
+_TTS_NETWORK_TIMEOUT = 15.0
+_TTS_QUEUE_TIMEOUT = 15.0
+_PIPELINE_POLL = 0.02
 
 tts = None
 XTTS_DEVICE = None
@@ -223,18 +226,19 @@ def _wav_envelope(data: bytes, fps: int = 60):
         return None
 
 
-def _playback_pump(env, fps: int = 60) -> bool:
+def _playback_pump(env, fps: int = 60, cancel_event=None) -> bool:
     """Block until playback ends, feeding the overlay real amplitude as it goes.
 
     Returns False if playback was interrupted (barge-in), True if it finished.
     """
+    cancel = _state.PipelineCancellation(cancel_event)
     show = OVERLAY_ENABLED and _main_window_minimized()
     if show:
         _overlay_send(show=True, amp=0.0)
     clock = pygame.time.Clock()
     try:
         while pygame.mixer.music.get_busy():
-            if _state.interrupt_event.is_set():
+            if cancel.is_set():
                 pygame.mixer.music.stop()
                 return False
             if show:
@@ -252,13 +256,15 @@ def _playback_pump(env, fps: int = 60) -> bool:
             _overlay_send(amp=0.0, show=False)
 
 
-def _play_cached_file(path: str) -> bool:
+def _play_cached_file(path: str, cancel_event=None) -> bool:
     """Play a pre-generated cache file instantly through pygame."""
+    cancel = _state.PipelineCancellation(cancel_event)
+    if cancel.is_set():
+        return False
     try:
         if not pygame.mixer.get_init():
             pygame.mixer.init()
         pygame.mixer.music.load(path)
-        _state.interrupt_event.clear()
         _mark_speaking()
         env = None
         if OVERLAY_ENABLED and path.endswith(".wav") and _main_window_minimized():
@@ -266,15 +272,19 @@ def _play_cached_file(path: str) -> bool:
                 env = _wav_envelope(Path(path).read_bytes())
             except Exception:
                 env = None
+        if cancel.is_set():
+            return False
         pygame.mixer.music.play()
-        _playback_pump(env)
-        _set_done_speaking()
-        pygame.mixer.music.unload()
-        return True
+        return _playback_pump(env, cancel_event=cancel)
     except Exception as e:
-        _set_done_speaking()
         print(f"Cached playback error: {e}")
         return False
+    finally:
+        _set_done_speaking()
+        try:
+            pygame.mixer.music.unload()
+        except Exception:
+            pass
 
 
 def _clean_tts_text(text: str) -> str:
@@ -305,7 +315,8 @@ def _run_edge_tts_sync(text: str, output: str) -> bool:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         communicate = edge_tts.Communicate(text, EDGE_VOICE)
-        loop.run_until_complete(communicate.save(output))
+        loop.run_until_complete(asyncio.wait_for(
+            communicate.save(output), timeout=_TTS_NETWORK_TIMEOUT))
         return True
     except Exception as e:
         print(f"edge-tts error: {e}")
@@ -336,7 +347,8 @@ def _edge_tts_to_bytes(text: str) -> bytes | None:
                     buf.write(chunk["data"])
             return buf.getvalue()
 
-        data = loop.run_until_complete(_collect())
+        data = loop.run_until_complete(asyncio.wait_for(
+            _collect(), timeout=_TTS_NETWORK_TIMEOUT))
         return data if data else None
     except Exception as e:
         print(f"edge-tts bytes error: {e}")
@@ -425,14 +437,14 @@ def _piper_to_wav_bytes(text: str) -> bytes | None:
         return None
 
 
-def tts_to_bytes(text: str):
+def tts_to_bytes(text: str, engine: str = None):
     """Unified TTS: return (audio_bytes, suffix) using the configured engine.
 
     TTS_ENGINE=edge  → Microsoft cloud voice (DmitryNeural, high quality)
     TTS_ENGINE=piper → local neural (fast, offline)
     """
     _t0 = time.perf_counter()
-    engine = _effective_tts_engine()
+    engine = _effective_tts_engine() if engine is None else engine
     if engine == "piper" and _piper_available():
         data = _piper_to_wav_bytes(text)
         if data:
@@ -446,60 +458,57 @@ def tts_to_bytes(text: str):
             jarvis_logger.debug(f"[TTS:edge] {_state.last_tts_ms:.0f} ms: {text[:50]!r}")
             return data, ".mp3"
         jarvis_logger.warning(f"[TTS:edge] FAILED (сеть?): {text[:60]!r}")
-    if engine not in {"edge", "piper"} and _piper_available():
-        data = _piper_to_wav_bytes(text)
+    if engine == "xtts":
+        data = _xtts_to_wav_bytes(text)
         if data:
             _state.last_tts_ms = (time.perf_counter() - _t0) * 1000.0
-            jarvis_logger.warning(f"[TTS:piper-fallback] {_state.last_tts_ms:.0f} ms: {text[:50]!r}")
             return data, ".wav"
     jarvis_logger.error(f"[TTS] все движки отказали: {text[:60]!r}")
     return None, None
 
 
-def generate_speech(text: str) -> bool:
-    """Fast or cloned speech. Prioritizes speed."""
-    engine = _effective_tts_engine()
-    if engine == "piper":
-        data = _piper_to_wav_bytes(text)
-        if not data:
-            return False
-        Path("temp_jarvis_speech.wav").write_bytes(data)
-        return True
-    if engine == "edge":
-        if edge_tts is None:
-            print("edge-tts not installed. Falling back to print only.")
-            return False
-        output = "temp_jarvis_speech.mp3"
-        return _run_edge_tts_sync(text, output)
-
+def _xtts_to_wav_bytes(text: str):
+    """Use the selected cloned voice, with per-call temporary output files."""
+    import tempfile
     _load_xtts_if_needed()
     if tts is None:
-        print("TTS not available.")
-        return False
-
-    reference_audio = "jarvis_sample.wav"
-    output_audio_raw = "temp_jarvis_speech_raw.wav"
-    output_audio = "temp_jarvis_speech.wav"
-
-    if not os.path.exists(reference_audio):
+        return None
+    reference_audio = JARVIS_DIR / "jarvis_sample.wav"
+    if not reference_audio.exists():
         print(f"WARNING: {reference_audio} not found for cloning.")
-        return False
-
+        return None
     try:
-        tts.tts_to_file(text=text, speaker_wav=reference_audio, language="ru", file_path=output_audio_raw)
-        subprocess.run(
-            ['ffmpeg', '-y', '-i', output_audio_raw, '-filter:a', 'atempo=1.3', output_audio],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        return True
+        with tempfile.TemporaryDirectory(prefix="jarvis-xtts-") as directory:
+            raw = str(Path(directory) / "raw.wav")
+            output = Path(directory) / "speech.wav"
+            tts.tts_to_file(text=text, speaker_wav=str(reference_audio), language="ru", file_path=raw)
+            subprocess.run(
+                ['ffmpeg', '-y', '-i', raw, '-filter:a', 'atempo=1.3', str(output)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=30, check=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return output.read_bytes()
     except Exception as e:
         print(f"XTTS generation error: {e}")
+        return None
+
+
+def generate_speech(text: str) -> bool:
+    """Compatibility file API; use exactly the configured voice."""
+    data, suffix = tts_to_bytes(text)
+    if not data:
         return False
+    Path(f"temp_jarvis_speech{suffix}").write_bytes(data)
+    return True
 
 
-def _play_audio_bytes(data: bytes, suffix: str = ".mp3") -> bool:
+def _play_audio_bytes(data: bytes, suffix: str = ".mp3", cancel_event=None) -> bool:
     """Play audio bytes through pygame via a temp file. Returns True if completed (not interrupted)."""
     import tempfile
+    cancel = _state.PipelineCancellation(cancel_event)
+    if cancel.is_set():
+        return False
     tmp = None
     try:
         if not pygame.mixer.get_init():
@@ -509,8 +518,10 @@ def _play_audio_bytes(data: bytes, suffix: str = ".mp3") -> bool:
             tmp = f.name
         env = _wav_envelope(data) if (OVERLAY_ENABLED and suffix == ".wav") else None
         pygame.mixer.music.load(tmp)
+        if cancel.is_set():
+            return False
         pygame.mixer.music.play()
-        return _playback_pump(env)
+        return _playback_pump(env, cancel_event=cancel)
     except Exception as e:
         print(f"Playback error: {e}")
         return False
@@ -527,8 +538,12 @@ def _play_audio_bytes(data: bytes, suffix: str = ".mp3") -> bool:
 
 
 # озвучиваем ответ вслух
-def speak(text: str):
-    """Speak text aloud. Interruptible — stops instantly on barge-in."""
+def speak(text: str, cancel_event=None):
+    """Speak using the chosen voice. A new command owns resetting interruption."""
+    cancel = _state.PipelineCancellation(cancel_event)
+    if cancel.is_set():
+        return
+    engine = _effective_tts_engine()
     _state.last_spoken_text = (text or "").strip()
     print(f"Jarvis: {text}")
     jarvis_logger.info(f"[SPEAK] {text!r}")
@@ -537,117 +552,137 @@ def speak(text: str):
     if text.strip() != "Секунду, обрабатываю, сэр.":
         ui_msg("jarvis", text)
 
-    cached = _TTS_INSTANT_CACHE.get(text.strip())
-    if cached and os.path.exists(cached):
-        jarvis_logger.debug("[SPEAK] → instant cache")
-        _play_cached_file(cached)
-        return
-
-    if _effective_tts_engine() in {"piper", "edge"}:
-        data, suffix = tts_to_bytes(text)
-        if data:
-            _state.interrupt_event.clear()
-            _mark_speaking()
-            _play_audio_bytes(data, suffix)
-            _set_done_speaking()
-            return
-
-    success = generate_speech(text)
-    if not success:
-        return
-
     try:
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
-
-        audio_file = "temp_jarvis_speech.mp3" if _effective_tts_engine() == "edge" else "temp_jarvis_speech.wav"
-        pygame.mixer.music.load(audio_file)
-
-        _state.interrupt_event.clear()
+        cached = _TTS_INSTANT_CACHE.get(text.strip())
+        if cached and os.path.exists(cached):
+            jarvis_logger.debug("[SPEAK] → instant cache")
+            _play_cached_file(cached, cancel_event=cancel)
+            return
         _mark_speaking()
-
-        pygame.mixer.music.play()
-
-        while pygame.mixer.music.get_busy():
-            if _state.interrupt_event.is_set():
-                pygame.mixer.music.stop()
-                print("[Прерывание TTS]")
-                break
-            pygame.time.Clock().tick(30)
-
+        ui_sub("синтезирую голос…")
+        data, suffix = tts_to_bytes(text, engine=engine)
+        if data and not cancel.is_set():
+            ui_sub("говорю…")
+            _play_audio_bytes(data, suffix, cancel_event=cancel)
+    finally:
         _set_done_speaking()
 
-        pygame.mixer.music.unload()
-        if os.path.exists(audio_file):
-            try:
-                os.remove(audio_file)
-            except Exception:
-                pass
-    except Exception as e:
-        _set_done_speaking()
-        print(f"Playback error: {e}")
+
+def speak_notification(text: str):
+    """Start a new timer/reminder utterance without clearing global interruption.
+
+    An old barge-in cannot suppress this notification, but a subsequent set()
+    (even if the global flag is still true) cancels it. Callers serialize speech
+    as before; this helper does not arbitrate concurrent mixer ownership.
+    Ordinary response continuations must keep using speak()/their response token.
+    """
+    return speak(text, cancel_event=_state.PipelineCancellation.for_notification())
 
 
-def speak_streaming(sentences_iter):
+def speak_streaming(sentences_iter, cancel_event=None):
     """Streaming TTS pipeline: generate + play sentences concurrently.
 
-    Takes an iterable of sentence strings. For each sentence:
-    - Fires edge-tts generation in a background thread
-    - Plays the previous sentence's audio while the next is being generated
-    - First word starts playing in ~300-500ms instead of waiting for full response
+    Each run latches cancellation independently of later global interrupt resets.
+    Queue waits are interruptible; errors and completion have a separate channel
+    which cannot be blocked by a full audio queue. The producer closes its own
+    iterator. Arbitrary blocking next()/native synthesis cannot be killed; after
+    cancellation their eventual result is discarded, never played or enqueued.
     """
-    ui_state("speaking")
-
-    jarvis_logger.info("[SPEAK:stream] start")
-    if not (_piper_available() or edge_tts is not None):
-        full = " ".join(sentences_iter)
-        speak(full)
+    cancel = _state.PipelineCancellation(cancel_event)
+    if cancel.is_set():
         return
-
+    engine = _effective_tts_engine()  # Freeze auto for the whole response.
+    ui_state("speaking")
+    jarvis_logger.info("[SPEAK:stream] start")
     audio_queue: queue.Queue = queue.Queue(maxsize=3)
-    SENTINEL = object()
+    terminal = queue.Queue(maxsize=1)
+    producer_done = threading.Event()
     spoken_parts = []
 
     def producer():
-        """Background thread: converts each sentence to (bytes, suffix) and enqueues."""
-        for sentence in sentences_iter:
-            sentence = sentence.strip()
-            if not sentence or not re.search(r'[A-Za-zА-Яа-я0-9]', sentence):
-                continue
-            if _state.interrupt_event.is_set():
-                break
-            spoken_parts.append(sentence)
-            data, suffix = tts_to_bytes(sentence)
-            if data:
-                audio_queue.put((data, suffix))
-            else:
-                jarvis_logger.error(f"[SPEAK:stream] TTS отказал, фраза пропущена: {sentence[:60]!r}")
-        audio_queue.put(SENTINEL)
-
-    _state.interrupt_event.clear()
-    _mark_speaking()
-
-    prod_thread = threading.Thread(target=producer, daemon=True)
-    prod_thread.start()
-
-    try:
-        while True:
-            if _state.interrupt_event.is_set():
-                print("[Прерывание streaming TTS]")
-                break
+        iterator = None
+        error = None
+        try:
+            iterator = iter(sentences_iter)
+            while not cancel.is_set():
+                try:
+                    sentence = next(iterator)
+                except StopIteration:
+                    break
+                if cancel.is_set():
+                    break
+                sentence = sentence.strip()
+                if not sentence or not re.search(r'[A-Za-zА-Яа-яЁё0-9]', sentence):
+                    continue
+                data, suffix = tts_to_bytes(sentence, engine=engine)
+                if not data:
+                    jarvis_logger.error(f"[SPEAK:stream] TTS отказал, фраза пропущена: {sentence[:60]!r}")
+                    continue
+                while not cancel.is_set():
+                    try:
+                        audio_queue.put((sentence, data, suffix), timeout=_PIPELINE_POLL)
+                        break
+                    except queue.Full:
+                        continue
+        except BaseException as exc:
+            error = exc
+        finally:
             try:
-                item = audio_queue.get(timeout=15)
+                close = getattr(iterator, "close", None)
+                if close:
+                    close()
+            except BaseException as exc:
+                error = error or exc
+            finally:
+                terminal.put_nowait(("error" if error is not None else "end", error))
+                producer_done.set()
+
+    prod_thread = threading.Thread(target=producer, name="jarvis-tts", daemon=True)
+    try:
+        _mark_speaking()
+        ui_sub("синтезирую голос…")
+        prod_thread.start()
+        waiting_since = time.monotonic()
+        while not cancel.is_set():
+            try:
+                item = audio_queue.get(timeout=_PIPELINE_POLL)
             except queue.Empty:
+                if producer_done.is_set():
+                    # get() may time out just before the final put + done. Once
+                    # done is observed no more audio can arrive; drain that last
+                    # item before consuming the terminal status (including errors).
+                    try:
+                        item = audio_queue.get_nowait()
+                    except queue.Empty:
+                        kind, payload = terminal.get_nowait()
+                        if kind == "error":
+                            raise payload
+                        break
+                else:
+                    if time.monotonic() - waiting_since >= _TTS_QUEUE_TIMEOUT:
+                        raise TimeoutError("TTS producer не выдал аудио в пределах таймаута")
+                    continue
+            if cancel.is_set():
                 break
-            if item is SENTINEL:
-                break
-            data, suffix = item
-            completed = _play_audio_bytes(data, suffix)
+            sentence, data, suffix = item
+            ui_sub("говорю…")
+            completed = _play_audio_bytes(data, suffix, cancel_event=cancel)
             if not completed:
                 break
+            spoken_parts.append(sentence)
+            waiting_since = time.monotonic()
     finally:
+        cancel.set()
+        if prod_thread.ident is not None:
+            prod_thread.join(timeout=0.2)
+            if prod_thread.is_alive():
+                jarvis_logger.warning("[SPEAK:stream] отменено; ожидается выход из native/iterator вызова")
+        while True:
+            try:
+                audio_queue.get_nowait()
+            except queue.Empty:
+                break
         if spoken_parts:
             _state.last_spoken_text = " ".join(spoken_parts)
         _set_done_speaking()
-        prod_thread.join(timeout=2)
         jarvis_logger.info("[SPEAK:stream] done")

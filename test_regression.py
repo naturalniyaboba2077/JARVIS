@@ -14,6 +14,7 @@ import re
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -166,8 +167,13 @@ def source_containing(marker):
 
 src = "\n".join(module_src(name) for name in CORE_FILES)
 
-check("piper НЕ используется как fallback при TTS_ENGINE=edge",
-      'if engine not in {"edge", "piper"} and _piper_available():' in src)
+with patch.object(jarvis_tts, "_effective_tts_engine", return_value="edge"), \
+        patch.object(jarvis_tts, "_edge_tts_to_bytes", return_value=None), \
+        patch.object(jarvis_tts, "_piper_to_wav_bytes") as _piper, \
+        patch.object(jarvis_tts, "_xtts_to_wav_bytes") as _xtts:
+    _audio = jarvis_tts.tts_to_bytes("Проверка выбора голоса")
+    check("piper НЕ используется как fallback при TTS_ENGINE=edge",
+          _audio == (None, None) and not _piper.called and not _xtts.called)
 
 # Настройки из jarvis_config.json попадают в окружение в _load_config(). Если
 # ядро успеет прочитать os.getenv раньше, значение из файла молча потеряется —
@@ -207,7 +213,7 @@ def _run_llm(local_engine, cloud_engine, deadline=0.3):
              jarvis_llm.LLM_ENGINE, jarvis_llm.LLM_DEADLINE)
     jarvis_llm._ollama_deltas = lambda m, **kw: local_engine()
     jarvis_llm._cloud_deltas = lambda m, **kw: cloud_engine()
-    jarvis_llm._ollama_available = lambda: True
+    jarvis_llm._ollama_available = lambda **kwargs: True
     jarvis_llm.OPENROUTER_API_KEY = "test-key"
     jarvis_llm.LLM_ENGINE = "local"
     jarvis_llm.LLM_DEADLINE = deadline
@@ -427,7 +433,7 @@ def _spy_pump(engine, messages):
 _savedpump, _savedlocal, _savedcloud = jarvis_llm._pump_engine, jarvis_llm._ollama_deltas, jarvis_llm._cloud_deltas
 _savedavail, _savedkey, _savedeng = jarvis_llm._ollama_available, jarvis_llm.OPENROUTER_API_KEY, jarvis_llm.LLM_ENGINE
 try:
-    jarvis_llm._ollama_available = lambda: True
+    jarvis_llm._ollama_available = lambda **kwargs: True
     jarvis_llm.OPENROUTER_API_KEY = "k"
     jarvis_llm.LLM_ENGINE = "local"
     def _mk(tag):
@@ -458,7 +464,7 @@ jarvis.speak = lambda t: _spoken.append(t)
 jarvis.speak_streaming = lambda it: _spoken.append(" ".join(list(it)))
 for _u in ("ui_state", "ui_msg", "ui_lat", "ui_clear_lat"):
     setattr(jarvis, _u, lambda *a, **k: None)
-jarvis_llm._ollama_available = lambda: True
+jarvis_llm._ollama_available = lambda **kwargs: True
 jarvis_llm.OPENROUTER_API_KEY = "k"
 jarvis_llm.LLM_ENGINE = "local"
 
@@ -839,7 +845,7 @@ try:
     jarvis.run_shell_command = lambda cmd: _shell_calls.append(cmd) or "запущено"
     _hyp_reply = jarvis.parse_and_execute_tags("[CMD:команда]", _hypothetical)
     check("[CMD:команда] из ответа LLM не запускается", not _shell_calls)
-    check("на вопрос возвращается ответ о возможностях Telegram", "Telegram" in _hyp_reply)
+    check("на вопрос возвращается пояснение без выполнения", "никаких действий" in _hyp_reply)
 finally:
     jarvis.run_shell_command = _old_shell
 
@@ -853,24 +859,32 @@ check("список Telegram-чатов распознаётся локальн�
       jarvis.detect_telegram_intent_from_text("покажи мои чаты в телеграме") == "[TG:CHATS]")
 
 _old_pending_tg = jarvis_state.pending_telegram_send
-_old_tg_send = jarvis_telegram.telegram_send_message
+_old_pending_email = jarvis_state.pending_email_send
+_old_tg_send = jarvis_telegram._telegram_send_resolved
+_old_tg_operation = jarvis_telegram._telegram_authorized_operation
 try:
+    from telethon.tl.types import InputPeerUser
+    _peer = InputPeerUser(101, 987)
+    jarvis_telegram._telegram_authorized_operation = lambda *a: {"peer": _peer, "chat": "Иван (ID 101)"}
     jarvis_state.pending_telegram_send = None
     _confirmation = jarvis_telegram.telegram_request_send("Иван", "Буду через час")
     check("Telegram SEND сначала просит подтверждение",
           jarvis_state.pending_telegram_send is not None and "Подтвердите" in _confirmation)
     check("короткое подтверждение не отбрасывается follow-up фильтром",
           not jarvis._is_stray_speech("подтверждаю"))
-    jarvis_telegram.telegram_send_message = lambda chat, text: f"sent:{chat}:{text}"
+    jarvis_telegram._telegram_send_resolved = lambda payload: (
+        f"sent:{payload['chat']}:{payload['text']}" if payload["peer"] is _peer else "wrong peer")
     check("сообщение отправляется только после подтверждения",
-          jarvis_telegram.telegram_confirm_pending("подтверждаю") == "sent:Иван:Буду через час")
+          jarvis_telegram.telegram_confirm_pending("подтверждаю") == "sent:Иван (ID 101):Буду через час")
     check("pending очищается после отправки", jarvis_state.pending_telegram_send is None)
     jarvis_telegram.telegram_request_send("Иван", "Отмена")
     check("отправку Telegram можно отменить",
           "отменена" in jarvis_telegram.telegram_confirm_pending("отмена").lower())
 finally:
     jarvis_state.pending_telegram_send = _old_pending_tg
-    jarvis_telegram.telegram_send_message = _old_tg_send
+    jarvis_state.pending_email_send = _old_pending_email
+    jarvis_telegram._telegram_send_resolved = _old_tg_send
+    jarvis_telegram._telegram_authorized_operation = _old_tg_operation
 
 check("Telegram API Hash не возвращается из панели открытым текстом",
       "TELEGRAM_API_HASH_SET" in src and
@@ -1016,9 +1030,14 @@ finally:
 
 check("запись агента идёт через версионирование",
       "write_versioned" in module_src("project_agent.py"))
-check("агенту запрещено рекурсивное удаление",
-      "рекурсивное удаление" in module_src("project_agent.py"))
-check("агент работает и вне Windows", '"/bin/sh"' in module_src("project_agent.py"))
+import tempfile
+with tempfile.TemporaryDirectory(prefix="jarvis-regression-agent-") as _directory:
+    _root = Path(_directory)
+    (_root / "app.py").write_text("raise RuntimeError('must not execute')", encoding="utf-8")
+    check("агенту запрещено рекурсивное удаление",
+          "заблокирована" in project_agent._execute(_root, "run_command", {"command": "rm -rf ."}))
+    check("проверки агента не требуют Windows или shell",
+          "exit=0" in project_agent._execute(_root, "run_command", {"command": "compile app.py"}))
 check("история правок не уходит в гит",
       "file_history/" in Path(".gitignore").read_text(encoding="utf-8"))
 

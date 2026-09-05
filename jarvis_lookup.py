@@ -19,7 +19,7 @@ try:
 except ImportError:
     from duckduckgo_search import DDGS
 
-from jarvis_config import _read_config_file, _write_config_file
+from jarvis_config import _read_config_file
 from jarvis_log import jarvis_logger
 from jarvis_telegram import (
     normalize_phone_number, telegram_lookup_phone, telegram_lookup_username,
@@ -126,22 +126,7 @@ def _lookup_report_bot_config() -> tuple[str, str]:
 
 
 def _discover_report_chat_id(token: str) -> str:
-    """Use getUpdates if the user already pressed Start on the report bot."""
-    try:
-        resp = http_requests.get(
-            f"https://api.telegram.org/bot{token}/getUpdates",
-            params={"limit": 20, "timeout": 0}, timeout=12)
-        data = resp.json()
-        if not data.get("ok"):
-            return ""
-        for upd in reversed(data.get("result") or []):
-            msg = upd.get("message") or upd.get("edited_message") or {}
-            chat = msg.get("chat") or {}
-            cid = chat.get("id")
-            if cid is not None:
-                return str(cid)
-    except Exception as e:
-        jarvis_logger.warning(f"[LOOKUP:BOT] getUpdates: {e}")
+    """Legacy hook: incoming bot messages cannot establish the owner's identity."""
     return ""
 
 
@@ -151,12 +136,8 @@ def send_lookup_report_via_bot(report: str, title: str = "Отчёт Jarvis") ->
     if not token:
         return "Бот для отчётов не настроен (TELEGRAM_REPORT_BOT_TOKEN)."
     if not chat_id:
-        chat_id = _discover_report_chat_id(token)
-        if chat_id:
-            _write_config_file({"TELEGRAM_REPORT_CHAT_ID": chat_id})
-    if not chat_id:
-        return ("Не знаю chat_id для бота отчётов. Напишите боту /start, "
-                "затем повторите запрос — или укажите TELEGRAM_REPORT_CHAT_ID в конфиге.")
+        return ("Укажите TELEGRAM_REPORT_CHAT_ID нужного получателя в конфиге. "
+                "Отчёт не отправлен: сообщения боту не подтверждают владельца чата.")
 
     text = f"{title}\n\n{report}".strip()
     chunks = []
@@ -253,7 +234,6 @@ def lookup_identity(kind: str, value: str) -> str:
         spoken_core = spoken_core[:277] + "…"
     web_note = f" В сети {len(web_lines)} упоминаний." if web_lines else " В открытом вебе почти ничего."
     return f"{spoken_core}{web_note} {delivery}"
-
 
 
 

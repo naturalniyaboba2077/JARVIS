@@ -59,7 +59,10 @@ with tempfile.TemporaryDirectory() as tmp:
         check("разрушительный git блокируется", "заблокирована" in
               project_agent._execute(project, "run_command",
                                      {"command": "git reset --hard HEAD~5"}))
-        check("проверочная команда выполняется", "exit=0" in
+        check("синтаксис проверяется без исполнения кода", "exit=0" in
+              project_agent._execute(project, "run_command", {
+                  "command": "python -m py_compile app.py"}))
+        check("произвольный Python не запускается на хосте", "заблокирована" in
               project_agent._execute(project, "run_command", {
                   "command": "python -c \"print('ok')\""}))
     finally:

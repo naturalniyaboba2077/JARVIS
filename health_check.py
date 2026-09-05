@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 required = {
     "speech_recognition": "speechrecognition", "openai": "openai",
+    "pyaudio": "PyAudio",
     "pygame": "pygame", "pyautogui": "pyautogui", "webview": "pywebview",
     "faster_whisper": "faster-whisper", "piper": "piper-tts",
     "requests": "requests", "psutil": "psutil", "telethon": "Telethon",

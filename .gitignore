@@ -52,3 +52,5 @@ test_xtts.py
 voice_samples.py
 voice_samples/
 jarvis_sample.wav
+jarvis_config.json.bak
+.jarvis_config.json.*.tmp

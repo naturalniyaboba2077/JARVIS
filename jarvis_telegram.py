@@ -15,6 +15,7 @@ import datetime
 import os
 import re
 import threading
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -54,7 +55,9 @@ TELEGRAM_DATA_DIR = JARVIS_DIR / "telegram_data"
 TELEGRAM_SESSION_BASE = TELEGRAM_DATA_DIR / "jarvis_user"
 TELEGRAM_EXPORT_DIR = Path.home() / "Documents" / "Jarvis Telegram Exports"
 _telegram_lock = threading.Lock()
+_telegram_pending_lock = threading.Lock()
 _telegram_phone_code_hash = None
+_telegram_phone_lookup_after = 0.0
 _TELEGRAM_CONFIRM_YES = frozenset({
     "да", "отправь", "подтверждаю", "отправляй", "разрешаю", "выполняй",
 })
@@ -363,14 +366,85 @@ def telegram_export_dialog(chat: str, limit: int = 200) -> str:
     return _telegram_authorized_operation("экспорт диалога", _export)
 
 
+def _telegram_chat_key(value: str) -> str:
+    return re.sub(r'\s+', ' ', value.casefold().replace('ё', 'е')).strip()
+
+
+def _telegram_dialog_label(dialog) -> str:
+    username = getattr(dialog.entity, "username", None)
+    return (f"{dialog.name or 'Без названия'}"
+            f"{' @' + username if username else ''} (ID {dialog.id})")
+
+
+async def _telegram_resolve_send_target(client, chat: str):
+    """Resolve an exact name/username/marked ID; fuzzy matches are suggestions only."""
+    from telethon.utils import get_input_peer
+
+    query = _telegram_chat_key(chat)
+    exact = []
+    suggestions = []
+    # Inspect all dialogs: a second matching name may be outside the recent 250.
+    for dialog in await client.get_dialogs(limit=None):
+        name = _telegram_chat_key(dialog.name or "")
+        username = _telegram_chat_key(getattr(dialog.entity, "username", None) or "")
+        if query.startswith("@"):
+            matches = bool(username) and query == "@" + username
+        elif re.fullmatch(r'-?\d+', query):
+            matches = query == str(dialog.id)
+        else:
+            matches = query == name or bool(username) and query == username
+        if matches:
+            exact.append(dialog)
+        elif query and any(value and (
+                query in value or SequenceMatcher(None, query, value).ratio() >= 0.58)
+                for value in (name, username)):
+            suggestions.append(dialog)
+
+    if len(exact) != 1:
+        candidates = exact or suggestions
+        if candidates:
+            choices = "; ".join(_telegram_dialog_label(d) for d in candidates[:5])
+            return ("Получатель не определён однозначно. Укажите точное имя, "
+                    f"@username или ID чата. Варианты: {choices}.")
+        return f"Не нашёл точного получателя «{chat}». Укажите имя, @username или ID чата."
+    dialog = exact[0]
+    try:
+        # Concrete InputPeer carries ID/access_hash across our short-lived clients.
+        # InputPeerSelf would instead depend on whoever owns the next client.
+        peer = get_input_peer(dialog.entity, allow_self=False)
+    except (TypeError, ValueError):
+        return "Не удалось получить адрес получателя Telegram. Обновите чат и повторите запрос."
+    return {"peer": peer, "chat": _telegram_dialog_label(dialog)}
+
+
+async def _telegram_send_to_peer(client, payload: dict) -> str:
+    from telethon.tl.types import InputPeerChannel, InputPeerChat, InputPeerUser
+
+    peer = payload.get("peer")
+    if not isinstance(peer, (InputPeerUser, InputPeerChat, InputPeerChannel)):
+        return "Получатель не зафиксирован. Заново запросите отправку сообщения."
+    await client.send_message(peer, payload["text"])
+    jarvis_logger.info(f"[TELEGRAM] сообщение отправлено в чат {payload['chat']!r}")
+    return f"Сообщение в чат «{payload['chat']}» отправлено, сэр."
+
+
+def _telegram_send_resolved(payload: dict) -> str:
+    """Send the confirmed peer without resolving its display name again."""
+    return _telegram_authorized_operation(
+        "отправка сообщения", lambda client: _telegram_send_to_peer(client, payload))
+
+
 def telegram_send_message(chat: str, text: str) -> str:
+    """Explicit caller-confirmed send. A string target must match exactly once."""
+    chat, text = (chat or "").strip(), (text or "").strip()
+    if not chat or not text:
+        return "Нужно указать чат и текст сообщения, сэр."
+
     async def _send(client):
-        dialog = await _telegram_find_dialog(client, chat)
-        if dialog is None:
-            return f"Не нашёл чат «{chat}» в Telegram, сэр."
-        await client.send_message(dialog.entity, text)
-        jarvis_logger.info(f"[TELEGRAM] сообщение отправлено в чат {dialog.name!r}")
-        return f"Сообщение в чат «{dialog.name}» отправлено, сэр."
+        target = await _telegram_resolve_send_target(client, chat)
+        if isinstance(target, str):
+            return target
+        return await _telegram_send_to_peer(client, {**target, "text": text})
 
     return _telegram_authorized_operation("отправка сообщения", _send)
 
@@ -378,27 +452,35 @@ def telegram_send_message(chat: str, text: str) -> str:
 def telegram_request_send(chat: str, text: str) -> str:
     chat = (chat or "").strip()
     text = (text or "").strip()
-    if not chat or not text:
-        return "Нужно указать чат и текст сообщения, сэр."
-    _state.pending_telegram_send = {"chat": chat, "text": text}
-    _state.pending_email_send = None
-    preview = text if len(text) <= 140 else text[:140] + "…"
-    return (f"Подтвердите отправку в Telegram, сэр. Чат «{chat}», сообщение: {preview}. "
-            "Скажите «подтверждаю» или «отмена».")
+    with _telegram_pending_lock:
+        # A failed replacement must not leave an older message awaiting a 'yes'.
+        _state.pending_telegram_send = None
+        _state.pending_email_send = None
+        if not chat or not text:
+            return "Нужно указать чат и текст сообщения, сэр."
+        target = _telegram_authorized_operation(
+            "выбор получателя", lambda client: _telegram_resolve_send_target(client, chat))
+        if isinstance(target, str):
+            return target
+        _state.pending_telegram_send = {**target, "text": text}
+        preview = text if len(text) <= 140 else text[:140] + "…"
+        return (f"Подтвердите отправку в Telegram, сэр. Чат «{target['chat']}», "
+                f"сообщение: {preview}. Скажите «подтверждаю» или «отмена».")
 
 
 def telegram_confirm_pending(text: str) -> str | None:
-    if _state.pending_telegram_send is None:
-        return None
-    answer = re.sub(r'\s+', ' ', (text or '').strip().lower()).strip(' .,!?:;')
-    if answer in _TELEGRAM_CONFIRM_NO:
-        _state.pending_telegram_send = None
-        return "Отправка сообщения отменена, сэр."
-    if answer in _TELEGRAM_CONFIRM_YES:
+    with _telegram_pending_lock:
+        if _state.pending_telegram_send is None:
+            return None
+        answer = re.sub(r'\s+', ' ', (text or '').strip().lower()).strip(' .,!?:;')
+        if answer in _TELEGRAM_CONFIRM_NO:
+            _state.pending_telegram_send = None
+            return "Отправка сообщения отменена, сэр."
+        if answer not in _TELEGRAM_CONFIRM_YES:
+            return "Ожидаю подтверждения отправки Telegram: скажите «подтверждаю» или «отмена»."
         payload = _state.pending_telegram_send
         _state.pending_telegram_send = None
-        return telegram_send_message(payload["chat"], payload["text"])
-    return "Ожидаю подтверждения отправки Telegram: скажите «подтверждаю» или «отмена»."
+    return _telegram_send_resolved(payload)
 
 
 def normalize_phone_number(raw: str) -> str | None:
@@ -470,40 +552,41 @@ def telegram_lookup_username(username: str) -> str:
 
 
 def telegram_lookup_phone(phone: str) -> str:
-    phone = normalize_phone_number(phone) or (phone or "").strip()
-    if not phone.startswith("+"):
+    phone = normalize_phone_number(phone)
+    if not phone:
         return "Нужен номер в международном формате, сэр."
 
     async def _lookup(client):
-        from telethon.tl.functions.contacts import (
-            DeleteContactsRequest, ImportContactsRequest,
-        )
-        from telethon.tl.types import InputPhoneContact
-        imported = await client(ImportContactsRequest([
-            InputPhoneContact(client_id=0, phone=phone, first_name="JarvisLookup", last_name=""),
-        ]))
-        users = list(getattr(imported, "users", None) or [])
+        global _telegram_phone_lookup_after
         try:
-            if not users:
-                return (f"Telegram не раскрыл аккаунт по номеру {phone}. "
-                        "Номер скрыт настройками приватности или не зарегистрирован.")
-            user = users[0]
-            about = ""
-            try:
-                from telethon.tl.functions.users import GetFullUserRequest
-                full = await client(GetFullUserRequest(user))
-                about = (getattr(getattr(full, "full_user", None), "about", None) or "").strip()
-                if getattr(full, "users", None):
-                    user = full.users[0]
-            except Exception:
-                pass
-            lines = _telegram_format_user(user, about)
-            return "Telegram по номеру: " + "; ".join(lines) + "."
-        finally:
-            if users:
-                try:
-                    await client(DeleteContactsRequest(id=users))
-                except Exception:
-                    pass
+            from telethon.tl.functions.contacts import ResolvePhoneRequest
+            from telethon.errors import PhoneNotOccupiedError
+        except ImportError:
+            return "Обновите Telethon: поиск номера без изменения контактов недоступен."
+        # https://core.telegram.org/method/contacts.resolvePhone: at most 1 / 3 s.
+        # _telegram_authorized_operation serializes these calls under _telegram_lock.
+        now = time.monotonic()
+        if now < _telegram_phone_lookup_after:
+            return "Повторите поиск номера через несколько секунд, сэр."
+        _telegram_phone_lookup_after = now + 3.0
+        try:
+            resolved = await client(ResolvePhoneRequest(phone=phone))
+        except PhoneNotOccupiedError:
+            return f"Telegram не раскрыл аккаунт по номеру {phone}."
+        user_id = getattr(getattr(resolved, "peer", None), "user_id", None)
+        user = next((u for u in (getattr(resolved, "users", None) or [])
+                     if u.id == user_id), None)
+        if user is None:
+            return (f"Telegram не раскрыл аккаунт по номеру {phone}. "
+                    "Номер скрыт настройками приватности или не зарегистрирован.")
+        about = ""
+        try:
+            from telethon.tl.functions.users import GetFullUserRequest
+            full = await client(GetFullUserRequest(user))
+            about = (getattr(getattr(full, "full_user", None), "about", None) or "").strip()
+        except Exception:
+            pass
+        lines = _telegram_format_user(user, about)
+        return "Telegram по номеру: " + "; ".join(lines) + "."
 
     return _telegram_authorized_operation(f"поиск {phone}", _lookup)

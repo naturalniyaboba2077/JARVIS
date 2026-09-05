@@ -219,9 +219,9 @@ try:
     import jarvis
     check("jarvis (ядро) импортируется", True)
     check("get_volume отдаёт -1", jarvis.get_volume() == -1)
-    check("set_volume не бросает исключение", jarvis.set_volume(50) is None)
-    check("media_control не бросает исключение",
-          jarvis.media_control("playpause") is None)
+    check("set_volume честно возвращает отказ", jarvis.set_volume(50) is False)
+    check("media_control честно возвращает отказ",
+          jarvis.media_control("playpause") is False)
     check("set_brightness возвращает текст", isinstance(jarvis.set_brightness(50), str))
 
     # lock_pc и type_text имеют реальные побочные эффекты (блокировка сеанса,
@@ -246,16 +246,17 @@ try:
             self.buf = text
 
     _real_paste = plat.paste_from_clipboard
-    _real_clip = jarvis.pyperclip
+    import jarvis_tools
+    _real_clip = jarvis_tools.pyperclip
     _calls = []
     plat.paste_from_clipboard = lambda: (_calls.append(1), (False, "заглушка теста"))[1]
-    jarvis.pyperclip = _FakeClipboard()
+    jarvis_tools.pyperclip = _FakeClipboard()
     try:
-        check("type_text не бросает исключение", jarvis.type_text("проверка") is None)
+        check("type_text честно возвращает отказ", jarvis.type_text("проверка") is False)
         check("type_text вставляет через платформенный слой", _calls == [1])
     finally:
         plat.paste_from_clipboard = _real_paste
-        jarvis.pyperclip = _real_clip
+        jarvis_tools.pyperclip = _real_clip
 except ImportError as e:
     check("ядро импортируется при заблокированных Windows-библиотеках", False, str(e))
 except Exception as e:

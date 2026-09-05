@@ -4,20 +4,93 @@
 хранилище заметок или корень диска — и не мешает всему остальному. Обычные
 скрипты, скачивания и удаление файлов в загрузках проходят свободно.
 
-Так сделано осознанно: широкий фильтр ломает полезную работу чаще, чем
-предотвращает вред, а от настоящей ошибки всё равно спасает не он, а
-подтверждение перед необратимым действием.
+Это статическая эвристика, не sandbox и не гарантия для вычисляемых путей.
+Обычные exec/eval намеренно разрешены; голосового подтверждения здесь нет.
+Python-литералы разбираются AST; буквальные аргументы известных shell-команд
+удаления также нормализуются. Полный язык shell и выражения не интерпретируются.
 
-Модуль общий: его используют и действия ядра, и проектный агент, который
-правит файлы на сервере.
+Модуль используется действиями ядра. Проектный агент использует отдельные
+неисполняющие проверки из jarvis_project_checks, а не этот фильтр как sandbox.
 """
 
+import ast
+import ntpath
 import os
 import re
+from pathlib import Path
 
 from jarvis_config import JARVIS_DIR
 
 __all__ = ["is_code_safe", "_protected_roots"]
+
+
+def _canonical_path(value: str) -> str:
+    value = os.path.expandvars(os.path.expanduser(value))
+    # Windows spellings must normalize correctly even on the Linux server.
+    windows = bool(ntpath.splitdrive(value)[0]) or value.startswith("\\")
+    if not windows or os.name == "nt":
+        try:
+            value = str(Path(value).resolve())
+        except (OSError, ValueError, RuntimeError):
+            pass
+    return ntpath.normpath(value.replace("/", "\\")).casefold()
+
+
+def _literal_paths(code: str):
+    """Decode repr/raw/unicode literals without evaluating any supplied code."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return []  # Shell literals are handled separately, without evaluation.
+    return [_canonical_path(node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and node.value and "\x00" not in node.value and "\n" not in node.value]
+
+
+def _shell_literal_paths(code: str):
+    """Read literal deletion arguments, preserving Windows backslashes/quotes.
+
+    This is deliberately not a shell interpreter. Computed arguments and nested
+    shell programs are outside this heuristic; unrelated commands stay allowed.
+    """
+    tokens = re.finditer(r"""'(?:[^']|'')*'|"(?:`.|[^"`])*"|[;&|\n]|[^\s'";&|]+""", code)
+    commands = {"remove-item", "rd", "rmdir", "del", "rm"}
+    value_options = {"-erroraction", "-ea", "-warningaction", "-wa", "-informationaction", "-ia",
+                     "-errorvariable", "-ev", "-warningvariable", "-wv", "-outvariable", "-ov",
+                     "-outbuffer", "-ob", "-filter", "-include", "-exclude"}
+    at_command, deleting, skip_value, options = True, False, False, True
+    for match in tokens:
+        token = match.group()
+        low = token.lower()
+        if token in {";", "&", "|", "\n"}:
+            at_command, deleting, skip_value, options = True, False, False, True
+            continue
+        if at_command:
+            # Also accept an ordinary literal cmd /c prefix, without running it.
+            if low in {"cmd", "cmd.exe", "/c", "/k"}:
+                continue
+            deleting, at_command = low in commands, False
+            continue
+        if not deleting:
+            continue
+        if skip_value:
+            skip_value = False
+            continue
+        if options and token == "--":
+            options = False
+            continue
+        if options and (token.startswith("-") or low in {"/s", "/q", "/f", "/a", "/p"}):
+            skip_value = low in value_options
+            continue
+        if token.startswith("'"):
+            value = token[1:-1].replace("''", "'")  # PowerShell literal single quote
+        else:
+            quoted = token.startswith('"')
+            value = token[1:-1] if quoted else token
+            if any(char in value for char in ("$`" if quoted else "$`(){}")):
+                continue  # no evaluation/interpolation of supplied code
+        if value and "\x00" not in value and "\n" not in value:
+            yield _canonical_path(value)
 
 
 def _protected_roots() -> list:
@@ -60,10 +133,10 @@ def is_code_safe(code: str) -> tuple[bool, str]:
 
     if re.search(r"\bdiskpart\b", low) or re.search(r"\bbcdedit\b", low):
         return False, "diskpart/bcdedit — снос диска или загрузчика"
-    if re.search(r"\bformat\s+(?:/\S+\s+)*[a-z]:", low):
+    if re.search(r"\bformat(?:\.com|\.exe)?\s+(?:/\S+\s+)*[a-z]:", low):
         return False, "format диска"
 
-    if (re.search(r"reg\s+delete\s+[^\n]*(?:hklm|hkey_local_machine)\\system", low)
+    if (re.search(r"reg(?:\.exe)?\s+delete\s+[^\n]*(?:hklm|hkey_local_machine)\\system", low)
             or re.search(r"remove-item\s+[^\n]*hklm:\\system", low)):
         return False, "удаление системного куста реестра"
 
@@ -84,8 +157,26 @@ def is_code_safe(code: str) -> tuple[bool, str]:
 
     delete_op = destructive or bool(re.search(r"os\.remove\b|\.unlink\b|os\.rmdir\b", low))
     if delete_op:
-        for root in _protected_roots():
-            if root in norm:
-                return False, f"снос защищённого пути ({root})"
+        # Compare decoded VALUES, not doubled backslashes in Python source.
+        paths = _literal_paths(code)
+        if destructive:
+            paths.extend(_shell_literal_paths(code))
+        for value in paths:
+            path = value.rstrip("\\*")
+            if destructive and (re.fullmatch(r"[a-z]:", path) or value == "\\"):
+                return False, "снос корня диска"
+            for protected in _protected_roots():
+                root = _canonical_path(protected).rstrip("\\")
+                # An ordinary single-file delete in the project is allowed.
+                # Canonicalizing a relative filename must not turn anti-wipe
+                # into a blanket ban on every file under a protected directory.
+                if (path == root or (destructive and (
+                        path.startswith(root + "\\") or
+                        (path and root.startswith(path + "\\"))))):
+                    return False, f"снос защищённого пути ({root})"
+        if destructive:
+            for root in _protected_roots():
+                if root in norm:
+                    return False, f"снос защищённого пути ({root})"
 
     return True, ""

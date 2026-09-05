@@ -17,6 +17,8 @@ import json
 import os
 import re
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 __all__ = [
@@ -31,6 +33,7 @@ __all__ = [
 JARVIS_DIR = Path(__file__).parent
 CONFIG_PATH = JARVIS_DIR / "jarvis_config.json"
 APP_VERSION = "1.2.0"
+_CONFIG_LOCK = threading.RLock()
 
 UI_SETTING_KEYS = {
     "JARVIS_LLM", "OLLAMA_MODEL", "OPENROUTER_MODEL", "OPENROUTER_FREE_MODEL",
@@ -46,23 +49,58 @@ UI_SETTING_KEYS = {
 }
 
 
-def _read_config_file() -> dict:
-    if not CONFIG_PATH.exists():
-        return {}
+def _read_config_snapshot() -> tuple[dict, bytes | None]:
+    """Read a valid object and its original bytes; only a missing file is empty."""
     try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        print(f"[Config] Не удалось прочитать {CONFIG_PATH.name}: {e}")
-        return {}
+        original = CONFIG_PATH.read_bytes()
+    except FileNotFoundError:
+        return {}, None
+    data = json.loads(original)
+    if not isinstance(data, dict):
+        raise ValueError("Конфигурация должна быть JSON-объектом.")
+    return data, original
+
+
+def _read_config_file() -> dict:
+    with _CONFIG_LOCK:
+        try:
+            return _read_config_snapshot()[0]
+        except Exception as e:
+            print(f"[Config] Не удалось прочитать {CONFIG_PATH.name}: {e}")
+            return {}
+
+
+def _atomic_write_config_bytes(path: Path, content: bytes) -> None:
+    """Replace on the same filesystem, keeping the destination intact on failure."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="wb", dir=path.parent, prefix=f".{path.name}.",
+                suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _write_config_file(updates: dict) -> tuple[bool, str]:
     """Persist validated UI settings. Most engine settings apply on restart."""
+    # Hold the lock across read/merge/backup/replace, not just the final write.
+    with _CONFIG_LOCK:
+        return _write_config_file_locked(updates)
+
+
+def _write_config_file_locked(updates: dict) -> tuple[bool, str]:
     if not isinstance(updates, dict):
         return False, "Некорректные настройки."
-    cfg = _read_config_file()
+    try:
+        cfg, original = _read_config_snapshot()
+    except Exception as e:
+        return False, f"Не удалось прочитать конфигурацию; настройки не изменены: {e}"
     allowed_values = {
         "JARVIS_LLM": {"local", "cloud"}, "STT_ENGINE": {"whisper", "google"},
         "TTS_ENGINE": {"auto", "piper", "edge", "xtts"},
@@ -119,8 +157,11 @@ def _write_config_file(updates: dict) -> tuple[bool, str]:
             return False, "Телефон Telegram укажите в международном формате, например +79991234567."
         cfg[key] = value
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        content = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")
+        if original is not None:
+            backup = CONFIG_PATH.with_name(CONFIG_PATH.name + ".bak")
+            _atomic_write_config_bytes(backup, original)
+        _atomic_write_config_bytes(CONFIG_PATH, content)
         return True, "Настройки сохранены. Перезапустите Джарвис для применения."
     except Exception as e:
         return False, f"Не удалось сохранить настройки: {e}"

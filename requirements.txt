@@ -31,6 +31,7 @@ edge-tts
 # WHISPER_MODEL=small by default: 'base' mis-hears the Russian wake word
 # ("Жар весь" instead of "Джарвис") which makes Jarvis appear deaf.
 speechrecognition
+PyAudio>=0.2.14
 faster-whisper
 # CUDA 12 runtime libs for GPU whisper on RTX 50-series (Blackwell).
 # Required because CTranslate2 4.x is built against CUDA 12 (torch here is cu13).
