@@ -54,17 +54,15 @@ with tempfile.TemporaryDirectory() as tmp:
         check("правка агента откатывается",
               "app.py" in jarvis_fileops.undo_last(project) and
               "old" in (project / "app.py").read_text(encoding="utf-8"))
-        check("разрушительная команда блокируется", "заблокирована" in
+        check("удаление активного проекта блокируется", "заблокирована" in
               project_agent._execute(project, "run_command", {"command": "rm -rf ."}))
-        check("разрушительный git блокируется", "заблокирована" in
+        check("удаление системы блокируется", "заблокирована" in
               project_agent._execute(project, "run_command",
-                                     {"command": "git reset --hard HEAD~5"}))
-        check("синтаксис проверяется без исполнения кода", "exit=0" in
-              project_agent._execute(project, "run_command", {
-                  "command": "python -m py_compile app.py"}))
-        check("произвольный Python не запускается на хосте", "заблокирована" in
-              project_agent._execute(project, "run_command", {
-                  "command": "python -c \"print('ok')\""}))
+                                     {"command": "format C: /q"}))
+        command_result = project_agent._execute(project, "run_command", {
+            "command": "python -c \"print('ok')\""})
+        check("произвольная команда выполняется на хосте",
+              "exit=0" in command_result and "ok" in command_result)
     finally:
         if old_roots is None:
             os.environ.pop("JARVIS_PROJECT_ROOTS", None)

@@ -336,7 +336,7 @@ class MainRouteTests(unittest.TestCase):
                 commands = queue.Queue()
                 commands.put(phrase)
                 commands.put("выход")
-                for name in ("start_overlay", "stop_overlay", "prewarm_tts_cache", "ui_call", "ui_state", "speak"):
+                for name in ("start_overlay", "stop_overlay", "prewarm_tts_cache", "start_tts_cache_warmup", "ui_call", "ui_state", "speak"):
                     stack.enter_context(patch.object(jarvis, name))
                 stack.enter_context(patch.object(jarvis, "command_queue", commands))
                 stack.enter_context(patch.object(jarvis, "_select_mic", return_value=None))

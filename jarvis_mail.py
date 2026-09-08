@@ -20,7 +20,7 @@ from googleapiclient.discovery import build
 
 import jarvis_features as _feat
 import jarvis_state as _state
-from jarvis_telegram import _TELEGRAM_CONFIRM_NO, _TELEGRAM_CONFIRM_YES
+import jarvis_confirm as _confirm
 
 __all__ = [
     "SCOPES", "get_calendar_service", "read_calendar_events", "add_calendar_event",
@@ -116,27 +116,29 @@ def add_calendar_event(time_str: str, summary: str) -> str:
 
 def email_request_send(to: str, subject: str, body: str) -> str:
     """Stage an email; the next explicit confirmation performs the send."""
-    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", (to or "").strip()):
-        return "Некорректный адрес электронной почты, сэр."
-    _state.pending_email_send = {
-        "to": to.strip(), "subject": (subject or "Без темы").strip(),
-        "body": (body or "").strip(),
-    }
-    _state.pending_telegram_send = None
+    with _confirm.LOCK:
+        _confirm.clear()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", (to or "").strip()):
+            return "Некорректный адрес электронной почты, сэр."
+        _confirm.stage("email", {
+            "to": to.strip(), "subject": (subject or "Без темы").strip(),
+            "body": (body or "").strip(),
+        })
     return (f"Подтвердите отправку письма на {to}: тема «{subject}». "
             "Скажите «подтверждаю» или «отмена».")
 
 
-def email_confirm_pending(text: str) -> str | None:
-    if _state.pending_email_send is None:
+def email_confirm_pending(text: str, request_id=None) -> str | None:
+    outcome, payload = _confirm.consume("email", text, request_id)
+    if outcome == "none":
         return None
-    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
-    if normalized in _TELEGRAM_CONFIRM_NO:
-        _state.pending_email_send = None
+    if outcome == "stale":
+        return "Это подтверждение больше не действует. Проверьте текущую карточку письма."
+    if outcome == "expired":
+        return "Срок подтверждения письма истёк. Заново запросите отправку."
+    if outcome == "cancelled":
         return "Отправку письма отменил, сэр."
-    if normalized in _TELEGRAM_CONFIRM_YES:
-        payload = _state.pending_email_send
-        _state.pending_email_send = None
+    if outcome == "confirmed":
         return _feat.gmail_send(payload["to"], payload["subject"], payload["body"])
     return "Ожидаю подтверждения письма: скажите «подтверждаю» или «отмена»."
 

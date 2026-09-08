@@ -1,8 +1,8 @@
-"""Окно Jarvis и полоски-визуализация голоса.
+"""Окно Jarvis и компактный индикатор голоса.
 
 Две вещи, которых на домашнем сервере не будет вовсе: нативное окно на
-pywebview и оверлей — отдельный процесс, рисующий по краю экрана полоски под
-громкость речи. Поэтому они и вынесены отдельно от ядра.
+pywebview и оверлей — отдельный процесс, показывающий над панелью задач
+компактный индикатор громкости речи. Поэтому они вынесены отдельно от ядра.
 
 Всё здесь молча ничего не делает, когда окна нет: ui_call при _ui_window=None
 просто выходит, а оверлей не запускается при JARVIS_OVERLAY=off. Ядру не нужно
@@ -17,9 +17,11 @@ import json
 import os
 import subprocess
 import threading
+import time
 
 from jarvis_config import JARVIS_DIR, _pythonw_exe
 from jarvis_log import jarvis_logger
+from jarvis_dialogue import record_message
 
 __all__ = [
     "UI_ENABLED", "UI_HTML", "OVERLAY_ENABLED",
@@ -34,6 +36,9 @@ UI_ENABLED = os.getenv("JARVIS_UI", "on").lower() == "on"
 UI_HTML = str((JARVIS_DIR / "ui" / "index.html").resolve())
 _ui_window = None
 _ui_last_state = None
+_ui_last_sub = ""
+_ui_phase_started_at = time.monotonic()
+_ui_status_lock = threading.RLock()
 
 
 def _find_jarvis_hwnd():
@@ -88,21 +93,39 @@ def ui_call(js: str):
 
 def ui_state(s: str):
     """Push a state (idle/listening/thinking/speaking) to the UI orb."""
-    global _ui_last_state
-    if s == _ui_last_state:
-        return
-    _ui_last_state = s
+    global _ui_last_state, _ui_last_sub, _ui_phase_started_at
+    with _ui_status_lock:
+        if s == _ui_last_state:
+            return
+        _ui_last_state, _ui_last_sub = s, ""
+        _ui_phase_started_at = time.monotonic()
     ui_call(f"window.jvSetState && jvSetState({json.dumps(s)})")
 
 
 def ui_sub(text: str):
     """Set just the small line under the orb (the phase caption)."""
+    global _ui_last_sub, _ui_phase_started_at
+    with _ui_status_lock:
+        if text != _ui_last_sub:
+            _ui_phase_started_at = time.monotonic()
+        _ui_last_sub = text
     ui_call(f"window.jvSetSub && jvSetSub({json.dumps(text, ensure_ascii=False)})")
 
 
-def ui_msg(who: str, text: str):
+def phase_snapshot():
+    """Last real execution caption, available after a UI reconnect; no inference."""
+    with _ui_status_lock:
+        return {"state": _ui_last_state or "idle", "text": _ui_last_sub,
+                "elapsed_seconds": max(0, int(time.monotonic() - _ui_phase_started_at))}
+
+
+def ui_msg(who: str, text: str, *, source=None):
     if not text:
         return
+    # Works headless too. Log once at the presentation boundary, not again from
+    # every quick-command handler and TTS/log_interaction call.
+    record_message(who, text, source=source or ('input' if who == 'user' else 'response'),
+                   status='received' if who == 'user' else 'displayed')
     ui_call(f"window.jvAddMsg && jvAddMsg({json.dumps(who)},{json.dumps(text, ensure_ascii=False)})")
 
 

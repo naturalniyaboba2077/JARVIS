@@ -159,16 +159,19 @@ def _open_regular(path: Path, write=False, create=False):
     return fd
 
 
-def _snapshot(path: Path):
+def _snapshot(path: Path, max_bytes=None):
+    limit = MAX_FILE_BYTES if max_bytes is None else min(int(max_bytes), 8 * 1024 * 1024)
+    if limit <= 0:
+        raise ValueError("Некорректный лимит чтения")
     try:
         fd = _open_regular(path)
     except FileNotFoundError:
         return None, None
     with os.fdopen(fd, "rb") as stream:
         before = os.fstat(stream.fileno())
-        data = stream.read(MAX_FILE_BYTES + 1)
+        data = stream.read(limit + 1)
         after = os.fstat(stream.fileno())
-    if len(data) > MAX_FILE_BYTES:
+    if len(data) > limit:
         raise FileConflict("Файл слишком большой для версионирования")
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise FileConflict("Файл изменился во время чтения")
@@ -177,10 +180,10 @@ def _snapshot(path: Path):
             "sha256": hashlib.sha256(data).hexdigest()}, data
 
 
-def read_project_bytes(root: Path, relative) -> bytes:
+def read_project_bytes(root: Path, relative, max_bytes=None) -> bytes:
     path = checked_path(root, relative)
     with _parents(path):
-        info, data = _snapshot(path)
+        info, data = _snapshot(path, max_bytes=max_bytes)
         if info is None:
             raise FileNotFoundError(path)
         return data
@@ -404,7 +407,7 @@ def _transaction(root, target, before, data, record):
     _recover(root)
 
 
-def write_versioned(root: Path, target: Path, content: str) -> str:
+def write_versioned(root: Path, target: Path, content: str, *, expected_sha256=None) -> str:
     data = content.encode("utf-8")
     if len(data) > MAX_FILE_BYTES:
         return "Содержимое слишком большое"
@@ -416,6 +419,9 @@ def write_versioned(root: Path, target: Path, content: str) -> str:
         relative = target.relative_to(root).as_posix()
         with _parents(target, create=True):
             before, previous = _snapshot(target)
+            if expected_sha256 is not None and ((expected_sha256 == '' and before is not None) or
+                    (expected_sha256 != '' and (before is None or before['sha256'] != expected_sha256))):
+                raise FileConflict("Файл изменился после подготовки правки; запись не выполнена")
             records = _read_journal(root)
             seq = max((r["seq"] for r in records), default=0) + 1
             backup = None
@@ -429,10 +435,15 @@ def write_versioned(root: Path, target: Path, content: str) -> str:
                       "existed": before is not None, "backup": backup, "before": before}
             _transaction(root, target, before, data, record)
         what = "Перезаписан" if before else "Создан"
+        # Headless/isolated workers do not depend on the desktop observer.
+        import sys
+        dashboard = sys.modules.get("jarvis_dashboard")
+        if dashboard is not None:
+            dashboard.register_file(target, title=f"{what}: {relative}", project=root, seq=seq)
         return f"{what}: {relative} (правка №{seq}, отменяется командой «отмени последнюю правку»)"
 
 
-def undo_last(root: Path) -> str:
+def undo_last(root: Path, expected_seq=None) -> str:
     try:
         with _locked(root) as root:
             recovered = _recover(root)
@@ -443,6 +454,8 @@ def undo_last(root: Path) -> str:
             if not changes:
                 return "Отменять нечего, сэр — правок в этом проекте не было."
             change = changes[0]
+            if expected_seq is not None and change["seq"] != expected_seq:
+                return "Откат отменён: появилась другая правка. Обновите историю проекта."
             if change.get("version") != 2 or "after" not in change:
                 return ("Старая правка без контрольной суммы и идентичности: " + change["path"] +
                         ". Автоматический откат небезопасен; история и резервная копия сохранены.")
@@ -482,3 +495,31 @@ def list_history(root: Path, limit: int = 10) -> str:
     if len(changes) > limit:
         lines.append(f"  … и ещё {len(changes) - limit}")
     return "\n".join(lines)
+
+
+def preview_change(root: Path, seq: int) -> str:
+    """Read a validated before/after diff; never revert or execute the file."""
+    import difflib
+    with _locked(root) as root:
+        records = _read_journal(root)
+        change = next((item for item in _pending(records) if item["seq"] == seq), None)
+        if change is None or change.get("version") != 2:
+            raise FileConflict("Эта правка уже отменена или её история недоступна")
+        target = checked_path(root, change["path"])
+        with _parents(target):
+            current, after = _snapshot(target)
+        if current != change["after"]:
+            raise FileConflict("Файл изменён после этой правки. Просмотр устарел.")
+        before = b""
+        if change["existed"]:
+            backup = change["backup"]
+            if not backup or Path(backup).name != backup or ":" in backup:
+                raise FileConflict("Некорректный путь резервной копии")
+            _, before = _snapshot(history_root(root) / "blobs" / backup)
+            if before is None or hashlib.sha256(before).hexdigest() != change["before"]["sha256"]:
+                raise FileConflict("Резервная копия потеряна или изменена")
+        return "".join(difflib.unified_diff(
+            before.decode("utf-8", errors="replace").splitlines(keepends=True),
+            after.decode("utf-8", errors="replace").splitlines(keepends=True),
+            fromfile="До / " + change["path"], tofile="После / " + change["path"],
+        )) or "Содержимое не изменилось."

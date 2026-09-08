@@ -24,8 +24,10 @@ from jarvis_config import JARVIS_DIR
 __all__ = ["is_code_safe", "_protected_roots"]
 
 
-def _canonical_path(value: str) -> str:
+def _canonical_path(value: str, working_directory=None) -> str:
     value = os.path.expandvars(os.path.expanduser(value))
+    if working_directory and not ntpath.isabs(value) and not Path(value).is_absolute():
+        value = str(Path(working_directory) / value)
     # Windows spellings must normalize correctly even on the Linux server.
     windows = bool(ntpath.splitdrive(value)[0]) or value.startswith("\\")
     if not windows or os.name == "nt":
@@ -36,18 +38,18 @@ def _canonical_path(value: str) -> str:
     return ntpath.normpath(value.replace("/", "\\")).casefold()
 
 
-def _literal_paths(code: str):
+def _literal_paths(code: str, working_directory=None):
     """Decode repr/raw/unicode literals without evaluating any supplied code."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError):
         return []  # Shell literals are handled separately, without evaluation.
-    return [_canonical_path(node.value) for node in ast.walk(tree)
+    return [_canonical_path(node.value, working_directory) for node in ast.walk(tree)
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
             and node.value and "\x00" not in node.value and "\n" not in node.value]
 
 
-def _shell_literal_paths(code: str):
+def _shell_literal_paths(code: str, working_directory=None):
     """Read literal deletion arguments, preserving Windows backslashes/quotes.
 
     This is deliberately not a shell interpreter. Computed arguments and nested
@@ -90,10 +92,10 @@ def _shell_literal_paths(code: str):
             if any(char in value for char in ("$`" if quoted else "$`(){}")):
                 continue  # no evaluation/interpolation of supplied code
         if value and "\x00" not in value and "\n" not in value:
-            yield _canonical_path(value)
+            yield _canonical_path(value, working_directory)
 
 
-def _protected_roots() -> list:
+def _protected_roots(extra=()) -> list:
     """Lowercased, backslash-normalised paths whose recursive deletion is blocked.
 
     System dirs + this repo + the Obsidian vault + anything in the PROTECTED_PATHS
@@ -107,19 +109,49 @@ def _protected_roots() -> list:
         str(JARVIS_DIR).lower().replace("/", "\\"),
         r"c:\users\user\documents\obsidian vault",
     ]
-    extra = os.getenv("PROTECTED_PATHS", "")
-    roots += [p.strip().lower().replace("/", "\\") for p in extra.split(";") if p.strip()]
+    configured = os.getenv("PROTECTED_PATHS", "")
+    roots += [p.strip().lower().replace("/", "\\") for p in configured.split(";") if p.strip()]
+    roots += [str(path).lower().replace("/", "\\") for path in extra if str(path).strip()]
     return [r for r in roots if r]
 
 
+def _project_root(path: str) -> Path | None:
+    """Return an existing Git/project root containing *path*, if one is visible.
+
+    The anti-wipe filter is deliberately static, but literal paths may point at a
+    real local project. Inspecting their parents keeps a recursive delete from
+    removing an arbitrary Git checkout, not just Jarvis itself.
+    """
+    try:
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve(strict=False)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    if candidate.is_file():
+        candidate = candidate.parent
+    for index, directory in enumerate((candidate, *candidate.parents)):
+        if directory.name == ".git" or (directory / ".git").exists():
+            return directory.parent if directory.name == ".git" else directory
+        # A manifest in a home directory must not make unrelated folders such as
+        # Downloads undeletable. It only identifies the literal deletion target.
+        if index == 0 and any((directory / marker).is_file()
+                              for marker in ("pyproject.toml", "package.json", "Cargo.toml", "go.mod")):
+            return directory
+    return None
+
+
 # не даём снести систему или проект
-def is_code_safe(code: str) -> tuple[bool, str]:
+def is_code_safe(code: str, protected_paths=(), working_directory=None) -> tuple[bool, str]:
     """Anti-wipe filter (ROADMAP §2.1). Returns (ok, reason).
 
-    Blocks ONLY: disk/boot wipe (format C:, diskpart, bcdedit), destructive system
-    registry hives, and recursive deletion of a drive root or a protected root
-    (system dirs, this repo, the vault, config PROTECTED_PATHS). `reason` is a short
-    technical note for the log; callers speak a fixed refusal phrase.
+    Blocks ONLY: system destruction plus deletion of projects. This includes
+    disk/boot wipe (format C:, diskpart, bcdedit), destructive system registry
+    hives, recursive deletion of a drive root or a protected root, and recursive
+    deletion inside a detected Git/project tree. `protected_paths` and
+    `working_directory` let a caller protect its active project root before
+    starting a command with relative paths.
 
     Everything else is allowed on purpose — exec/eval, downloads, 'malware', and
     rmtree of ordinary folders (Downloads/temp) all pass. Prefer a false-allow of a
@@ -158,14 +190,14 @@ def is_code_safe(code: str) -> tuple[bool, str]:
     delete_op = destructive or bool(re.search(r"os\.remove\b|\.unlink\b|os\.rmdir\b", low))
     if delete_op:
         # Compare decoded VALUES, not doubled backslashes in Python source.
-        paths = _literal_paths(code)
+        paths = _literal_paths(code, working_directory)
         if destructive:
-            paths.extend(_shell_literal_paths(code))
+            paths.extend(_shell_literal_paths(code, working_directory))
         for value in paths:
             path = value.rstrip("\\*")
             if destructive and (re.fullmatch(r"[a-z]:", path) or value == "\\"):
                 return False, "снос корня диска"
-            for protected in _protected_roots():
+            for protected in _protected_roots(protected_paths):
                 root = _canonical_path(protected).rstrip("\\")
                 # An ordinary single-file delete in the project is allowed.
                 # Canonicalizing a relative filename must not turn anti-wipe
@@ -174,8 +206,11 @@ def is_code_safe(code: str) -> tuple[bool, str]:
                         path.startswith(root + "\\") or
                         (path and root.startswith(path + "\\"))))):
                     return False, f"снос защищённого пути ({root})"
+            project = _project_root(path)
+            if project and (destructive or path == _canonical_path(str(project))):
+                return False, f"снос проекта ({project})"
         if destructive:
-            for root in _protected_roots():
+            for root in _protected_roots(protected_paths):
                 if root in norm:
                     return False, f"снос защищённого пути ({root})"
 

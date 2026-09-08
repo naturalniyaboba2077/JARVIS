@@ -9,7 +9,9 @@ and rmtree of ordinary folders. No voice confirm, no content moderation.
 Run: python test_safety.py
 """
 import sys
+import tempfile
 import types
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -54,6 +56,15 @@ for desc, code, expect_block in CASES:
           + (f"  ({reason})" if blocked else ""))
     if not good:
         fails.append(desc)
+
+with tempfile.TemporaryDirectory(prefix="jarvis-safety-project-") as tmp:
+    project = Path(tmp) / "checkout"
+    (project / ".git").mkdir(parents=True)
+    ok, reason = is_code_safe(f'shutil.rmtree({str(project)!r})')
+    good = not ok and "проекта" in reason
+    print(f"  {'OK  ' if good else 'FAIL'} [BLOCK->{'BLOCK' if not ok else 'ALLOW'}] git project")
+    if not good:
+        fails.append("git project")
 
 print("\n" + "=" * 60)
 print(f"{len(CASES) - len(fails)}/{len(CASES)} верно"

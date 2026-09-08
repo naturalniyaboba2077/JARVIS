@@ -1,421 +1,157 @@
+<!doctype html>
+<html lang="ru">
+<head>
 <meta charset="utf-8">
-<style>
-  :root{
-    --bg:#04040c; --blue:#4aa8ff; --blue2:#2f7fff; --violet:#9b6bff; --violet2:#7a3cff;
-    --panel:rgba(18,18,38,.55); --line:rgba(120,120,255,.20);
-    --ink:#e4e9ff; --mut:#8388b8; --mut2:#4a4d78;
-    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
-    --sans:system-ui,"Segoe UI",Roboto,sans-serif;
-    --accent:var(--blue);
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0; padding:0; background:#04040c; height:100%; overflow:hidden}
-
-  .jv-root{position:relative; height:100vh; display:flex; flex-direction:column;
-    background:#04040c; color:var(--ink); font-family:var(--sans); overflow:hidden; isolation:isolate;}
-
-  .titlebar{position:relative; z-index:6; display:flex; align-items:center; justify-content:flex-end;
-    height:34px; flex:none; padding:0 6px 0 14px; -webkit-user-select:none; user-select:none;}
-
-  .titlebar .grip{position:absolute; left:0; top:0; bottom:0; right:174px;}
-  .tb-btn{position:relative; z-index:7; width:42px; height:26px; display:grid; place-items:center;
-    border:0; background:transparent; color:var(--mut); cursor:pointer; border-radius:7px;
-    transition:background .18s, color .18s; font-family:var(--mono); font-size:13px; line-height:1}
-  .tb-btn:hover{background:rgba(120,120,255,.14); color:var(--ink)}
-  .tb-btn.close:hover{background:rgba(255,70,90,.85); color:#fff}
-
-  .aurora{position:absolute; inset:-30%; z-index:0; pointer-events:none; filter:blur(30px); opacity:.55;}
-  .aurora b{position:absolute; border-radius:50%; mix-blend-mode:screen; animation:drift 22s ease-in-out infinite;}
-  .a1{width:60%;height:60%; left:-5%; top:-10%; background:radial-gradient(circle,#2f7fff88,transparent 65%);}
-  .a2{width:55%;height:55%; right:-8%; top:5%; background:radial-gradient(circle,#7a3cff88,transparent 65%); animation-delay:-7s;}
-  .a3{width:50%;height:50%; left:25%; bottom:-15%; background:radial-gradient(circle,#4aa8ff66,transparent 65%); animation-delay:-13s;}
-  @keyframes drift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(8%,6%) scale(1.15)}66%{transform:translate(-6%,4%) scale(.92)}}
-  .grain{position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.4;
-    background-image:linear-gradient(rgba(120,120,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(120,120,255,.045) 1px,transparent 1px);
-    background-size:38px 38px; mask-image:radial-gradient(120% 80% at 60% 45%,#000 30%,transparent 80%);}
-
-  .jv-top{position:relative; z-index:3; flex:none; display:flex; justify-content:space-between; align-items:center; padding:2px 22px 14px;}
-  .jv-brand{font-family:var(--mono); letter-spacing:.44em; font-size:15px; font-weight:600; color:#cfe0ff;
-    text-shadow:0 0 18px rgba(90,150,255,.6);}
-  .jv-brand small{display:block; letter-spacing:.24em; font-size:9.5px; color:var(--mut); margin-top:3px; text-shadow:none;}
-  .jv-sys{font-family:var(--mono); font-size:10.5px; color:var(--mut); text-align:right; line-height:1.7;}
-  .jv-sys b{color:#8fb4ff}
-  .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#5affc2;box-shadow:0 0 8px #5affc2;margin-right:6px;animation:blink 2.4s infinite}
-  @keyframes blink{50%{opacity:.35}}
-
-  .jv-stage{position:relative; z-index:2; flex:1; min-height:0; display:grid;
-    grid-template-columns:minmax(240px,300px) 1fr; gap:16px; padding:0 22px 12px; align-items:center;}
-  .panel{background:var(--panel); border:1px solid var(--line); border-radius:14px; backdrop-filter:blur(10px); padding:14px;}
-  .panel h3{margin:0 0 10px; font-family:var(--mono); font-size:10px; letter-spacing:.24em; text-transform:uppercase;
-    color:#8fb4ff; display:flex; align-items:center; gap:8px;}
-  .panel h3::after{content:""; flex:1; height:1px; background:linear-gradient(90deg,var(--line),transparent)}
-  .jv-log{display:flex; flex-direction:column; gap:10px; max-height:400px; overflow-y:auto; padding-right:4px}
-  .jv-log::-webkit-scrollbar{width:5px} .jv-log::-webkit-scrollbar-thumb{background:var(--mut2);border-radius:3px}
-  .msg{font-size:13px; line-height:1.5; padding:8px 11px; border-radius:10px; max-width:92%; animation:rise .35s ease}
-  .msg .who{font-family:var(--mono); font-size:8.5px; letter-spacing:.16em; text-transform:uppercase; opacity:.6; margin-bottom:3px}
-  .msg.user{align-self:flex-end; background:rgba(74,168,255,.12); border:1px solid rgba(74,168,255,.26)}
-  .msg.jarvis{align-self:flex-start; background:rgba(155,107,255,.10); border:1px solid rgba(155,107,255,.24)}
-  .msg.user .who{color:var(--blue)} .msg.jarvis .who{color:var(--violet)}
-  @keyframes rise{from{opacity:0;transform:translateY(6px)}}
-
-  .jv-core{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0}
-  .orb-wrap{position:relative; width:400px; height:400px; max-width:80vw}
-  canvas#orb{width:100%; height:100%; display:block}
-  .state-label{font-family:var(--mono); letter-spacing:.32em; text-transform:uppercase; font-size:13px; margin-top:-6px;
-    color:var(--accent); text-shadow:0 0 16px currentColor; transition:color .5s; min-height:17px}
-  .state-sub{font-size:11px; color:var(--mut); margin-top:6px; font-family:var(--mono); min-height:15px}
-
-  .lat{display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; justify-content:center; min-height:28px}
-  .lat span{font-family:var(--mono); font-size:9.5px; letter-spacing:.06em; color:var(--mut2);
-    border:1px solid rgba(120,120,255,.14); border-radius:20px; padding:5px 11px; background:rgba(10,10,26,.5);
-    opacity:0; transform:translateY(4px); transition:.4s; display:flex; gap:6px; align-items:center}
-  .lat span.show{opacity:1; transform:none}
-  .lat span.lit{border-color:var(--accent); color:var(--ink); box-shadow:0 0 14px -3px var(--accent)}
-  .lat b{color:var(--accent); font-weight:600}
-  .lat span.sum{border-color:rgba(155,107,255,.5)} .lat span.sum b{color:var(--violet)}
-
-  .jv-ctl{position:relative; z-index:3; display:flex; gap:9px; align-items:center; justify-content:center; padding:8px 22px 20px; flex-wrap:wrap}
-  .jv-ctl input{flex:1; min-width:200px; max-width:440px; background:rgba(10,10,26,.6); border:1px solid var(--line);
-    border-radius:22px; padding:12px 17px; color:var(--ink); font-family:var(--sans); font-size:13px; outline:none}
-  .jv-ctl input:focus{border-color:var(--blue); box-shadow:0 0 0 3px rgba(74,168,255,.16)}
-  .jv-ctl input::placeholder{color:var(--mut2)}
-  .btn{font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; padding:11px 16px;
-    border-radius:22px; cursor:pointer; transition:.2s; color:#cbb8ff; border:1px solid rgba(155,107,255,.4);
-    background:linear-gradient(120deg,rgba(74,168,255,.12),rgba(155,107,255,.14))}
-  .btn:hover{box-shadow:0 0 18px -2px rgba(122,60,255,.5); border-color:var(--violet)}
-  .settings{position:absolute; z-index:20; right:18px; top:40px; width:min(560px,calc(100vw - 36px));
-    max-height:calc(100vh - 58px); overflow:auto; display:none; background:rgba(8,8,24,.97);
-    border:1px solid rgba(120,120,255,.32); border-radius:16px; padding:18px; box-shadow:0 18px 60px #000b}
-  .settings.open{display:block}.settings-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-  .settings-head h2{font:12px var(--mono);letter-spacing:.22em;text-transform:uppercase;margin:0;color:#b8ccff}
-  .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}.field{display:flex;flex-direction:column;gap:5px}
-  .field label{font:9px var(--mono);letter-spacing:.08em;color:var(--mut)}
-  .field input,.field select{background:#0b0b20;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px}
-  .settings-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:15px}.settings-note{font-size:10px;color:var(--mut);margin-top:10px}
-  .diag{white-space:pre-wrap;font:10px/1.55 var(--mono);color:#aebcff;background:#070717;border-radius:9px;padding:10px;margin-top:12px}
-  .telegram-auth{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:9px 12px;
-    border:1px solid rgba(74,168,255,.24);border-radius:11px;padding:12px;background:rgba(8,14,34,.65)}
-  .telegram-auth h3{grid-column:1/-1;margin:0;font:10px var(--mono);letter-spacing:.16em;color:#79b9ff}
-  .telegram-actions{grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .telegram-status{grid-column:1/-1;font:10px/1.5 var(--mono);color:#9fb5e8}
-  .telegram-help{grid-column:1/-1;font-size:10px;color:var(--mut)}
-  .seg{display:flex; border:1px solid var(--line); border-radius:22px; overflow:hidden; background:rgba(10,10,26,.5)}
-  .seg button{font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; padding:10px 13px;
-    background:transparent; color:var(--mut); border:0; cursor:pointer; transition:.2s}
-  .seg button.on{background:linear-gradient(120deg,rgba(74,168,255,.2),rgba(155,107,255,.24)); color:#dbe6ff}
-  .seg button:hover{color:var(--ink)}
-
-  @media (max-width:780px){
-    .jv-stage{grid-template-columns:1fr} .orb-wrap{width:300px;height:300px}
-    .panel.side-l{order:2} .jv-core{order:1}
-  }
-  @media (prefers-reduced-motion:reduce){.dot,.aurora b{animation:none}}
-</style>
-
-<div class="jv-root" id="jvRoot">
-  <div class="aurora"><b class="a1"></b><b class="a2"></b><b class="a3"></b></div>
-  <div class="grain"></div>
-
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Jarvis — личный голосовой помощник. Диалог, команды и результаты действий.">
+<title>J.A.R.V.I.S.</title>
+<link rel="icon" href="jarvis.ico">
+<link rel="stylesheet" href="jarvis.css">
+</head>
+<body>
+<a class="skip-link" href="#cmd">К вводу команды</a>
+<div class="app" id="jvRoot">
   <div class="titlebar">
     <div class="grip pywebview-drag-region"></div>
-    <button class="tb-btn" id="tbSettings" title="Настройки">⚙</button>
-    <button class="tb-btn" id="tbMin" title="Свернуть">—</button>
-    <button class="tb-btn" id="tbMax" title="Развернуть">□</button>
-    <button class="tb-btn close" id="tbClose" title="Закрыть">✕</button>
+    <span class="brand-mark"></span><span class="brand">JARVIS</span>
+    <div class="window-controls">
+      <button class="tb-btn" id="tbSettings" title="Настройки" aria-label="Настройки"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3Z"/></svg></button>
+      <button class="tb-btn" id="tbMin" title="Свернуть" aria-label="Свернуть">−</button>
+      <button class="tb-btn" id="tbMax" title="Развернуть" aria-label="Развернуть">□</button>
+      <button class="tb-btn close" id="tbClose" title="Закрыть Jarvis" aria-label="Закрыть Jarvis">×</button>
+    </div>
   </div>
-
-  <div class="settings" id="settingsPanel">
-    <div class="settings-head"><h2>Настройки J.A.R.V.I.S.</h2><button class="tb-btn" id="settingsClose">✕</button></div>
-    <div class="settings-grid">
-      <div class="field"><label>LLM</label><select data-key="JARVIS_LLM"><option value="local">local + cloud fallback</option><option value="cloud">cloud + local fallback</option></select></div>
+  <header class="app-header">
+    <div class="core" id="core" data-state="idle" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+    <div class="state-copy">
+      <p class="state-label" id="stLabel" role="status">Подключение</p>
+      <p class="state-sub" id="stSub">Ожидаю приложение…</p>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn activity-toggle" id="activityToggle" title="Последние действия" aria-label="Последние действия" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="1"/></svg></button>
+      <button class="icon-btn" id="modeToggle" title="Компактный режим" aria-label="Компактный режим" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M14 14h5v3h-5"/></svg></button>
+    </div>
+  </header>
+  <p class="compact-line" id="compactLine">Скажите «Джарвис» или напишите команду.</p>
+  <main class="workspace" id="workspace">
+    <section class="conversation" aria-label="Диалог">
+      <h2 class="section-heading conversation-heading">Диалог <span>J.A.R.V.I.S.</span></h2>
+      <div class="log" id="log" role="log" aria-label="Сообщения" aria-live="polite" aria-relevant="additions" tabindex="0">
+        <div class="empty" id="emptyState">
+          <p class="eyebrow"><span class="signal-mark" aria-hidden="true"></span> Личное пространство</p>
+          <h1>С чего начнём?</h1>
+          <p>Одна мысль — и мы за работой.<br>Скажите «Джарвис» или напишите, что нужно сделать.</p>
+          <div class="suggestions">
+            <button data-prompt="что ты умеешь">Что ты умеешь</button>
+            <button data-prompt="покажи список дел">Мои задачи</button>
+            <button data-prompt="проверь системы">Проверить системы</button>
+          </div>
+        </div>
+      </div>
+      <section class="confirmation" id="confirmation" aria-label="Подтверждение отправки" hidden>
+        <h2 id="confirmTitle">Проверьте перед отправкой</h2>
+        <div class="recipient" id="confirmRecipient"></div>
+        <div id="projectChoices" class="project-choices" hidden></div>
+        <div class="subject" id="confirmSubject"></div>
+        <pre id="confirmBody" tabindex="0"></pre>
+        <p id="projectAnswerHint" class="project-answer-hint" hidden></p>
+        <div class="confirm-meta" id="confirmMeta" role="status"></div>
+        <div class="card-actions">
+          <button class="btn confirm-send" id="confirmSend">Отправить</button>
+          <button class="btn secondary" id="confirmCancel">Отменить</button>
+        </div>
+      </section>
+    </section>
+    <aside class="activity" aria-label="Последние действия">
+      <h2 class="section-heading">Последние действия</h2>
+      <p class="activity-empty" id="activityEmpty">Здесь появятся таймеры, файлы и результаты команд.</p>
+      <div class="activity-list" id="timers"></div>
+      <div class="activity-list" id="activityList"></div>
+    </aside>
+  </main>
+  <div class="composer-wrap">
+    <div class="task-status" id="taskStatus" data-state="idle">
+      <span class="task-signal" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span class="task-caption" id="taskCaption" role="status" aria-live="polite">Ожидаю приложение</span>
+      <span class="task-time" id="taskTime" aria-label="Время на текущем этапе"></span>
+    </div>
+    <form class="composer" id="composer">
+      <textarea id="cmd" rows="1" aria-label="Команда Джарвису" placeholder="Напишите команду…" spellcheck="true"></textarea>
+      <button class="icon-btn" id="micToggle" type="button" aria-label="Приостановить распознавание" aria-pressed="false" title="Программная пауза: звук не поступает на распознавание; устройство остаётся открытым"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 10v2a6 6 0 0 0 12 0v-2M12 18v3M9 21h6"/></svg></button>
+      <button class="icon-btn" id="stopBtn" type="button" title="Остановить ответ и отменить ожидающее подтверждение" aria-label="Остановить"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+      <button class="icon-btn send" id="sendBtn" type="submit" title="Отправить команду" aria-label="Отправить команду"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
+    </form>
+  </div>
+  <div class="footer">
+    <span class="connection" id="connection" data-status="unknown">Ожидаю соединение</span>
+    <span class="shortcut">Enter — отправить · Shift+Enter — новая строка · Ctrl+Alt+J — голос</span>
+  </div>
+  <div class="notice" id="notice" role="status" hidden></div>
+  <div class="settings-shade" id="settingsShade" hidden aria-hidden="true"></div>
+  <div class="settings" id="settingsPanel" role="region" aria-label="Настройки" inert>
+    <div class="settings-head"><div><p class="settings-kicker">Ваш Jarvis</p><h2>Настройте под себя</h2><p class="settings-intro">Голос, привычки и подключения — в одном месте.</p></div><span class="settings-dirty" id="settingsDirty" hidden>Не сохранено</span><button class="icon-btn" id="settingsClose" title="Вернуться к диалогу" aria-label="Вернуться к диалогу">✕</button></div>
+    <div class="settings-layout"><nav class="settings-nav" id="settingsNav" role="tablist" aria-label="Разделы настроек"></nav><div class="settings-grid" id="settingsGrid">
+      <div class="field"><label>LLM</label><select data-key="JARVIS_LLM"><option value="lmstudio">LM Studio + fallback</option><option value="local">Ollama + cloud fallback</option><option value="cloud">cloud + Ollama fallback</option></select></div>
       <div class="field"><label>OLLAMA MODEL</label><input data-key="OLLAMA_MODEL"></div>
+      <div class="field"><label>LM STUDIO URL</label><input data-key="LM_STUDIO_URL"></div>
+      <div class="field"><label>LM STUDIO MODEL</label><input data-key="LM_STUDIO_MODEL"></div>
+      <div class="field"><label>LM STUDIO CODE MODEL</label><input data-key="LM_STUDIO_CODE_MODEL"></div>
+      <div class="field"><label>Автозагрузка LM Studio при старте</label><select data-key="LM_STUDIO_AUTOLOAD"><option>off</option><option>on</option></select></div>
+      <div class="field"><label>Доля слоёв LM Studio на GPU</label><input type="number" min="0" max="1" step="0.1" data-key="LM_STUDIO_GPU"></div>
+      <div class="field"><label>Контекст LM Studio при загрузке</label><input type="number" min="2048" max="32768" step="1024" data-key="LM_STUDIO_CONTEXT"></div>
       <div class="field"><label>OPENROUTER MODEL</label><input data-key="OPENROUTER_MODEL"></div>
       <div class="field"><label>БЕСПЛАТНАЯ РЕЗЕРВНАЯ МОДЕЛЬ</label><input data-key="OPENROUTER_FREE_MODEL"></div>
       <div class="field"><label>МОДЕЛЬ ДЛЯ РАБОТЫ С ПРОЕКТАМИ</label><input data-key="OPENROUTER_AGENT_MODEL"></div>
       <div class="field"><label>ПАПКИ ПРОЕКТОВ (ЧЕРЕЗ ;)</label><input data-key="JARVIS_PROJECT_ROOTS"></div>
-      <div class="field"><label>СЕССИОННАЯ ПАМЯТЬ</label><select data-key="SESSION_MEMORY"><option>off</option><option>on</option></select></div>
-      <div class="field"><label>LOCAL LLM DEADLINE, С</label><input type="number" min="0.2" max="15" step="0.1" data-key="JARVIS_LLM_DEADLINE"></div>
+      <div class="field"><label>Память диалогов</label><select data-key="SESSION_MEMORY"><option value="on">Помнить между запусками</option><option value="off">Только текущий запуск</option></select></div>
+      <div class="field"><label>LOCAL LLM DEADLINE, С</label><input type="number" min="0.2" max="60" step="0.1" data-key="JARVIS_LLM_DEADLINE"></div>
       <div class="field"><label>CLOUD LLM DEADLINE, С</label><input type="number" min="1" max="30" step="0.5" data-key="JARVIS_LLM_DEADLINE_CLOUD"></div>
+      <div class="field"><label>LM STUDIO DEADLINE, С</label><input type="number" min="1" max="60" step="0.5" data-key="JARVIS_LLM_DEADLINE_LM_STUDIO"></div>
       <div class="field"><label>GENERATION BUDGET, С</label><input type="number" min="1" max="60" step="1" data-key="JARVIS_LLM_GEN_BUDGET"></div>
       <div class="field"><label>STT ENGINE</label><select data-key="STT_ENGINE"><option>whisper</option><option>google</option></select></div>
       <div class="field"><label>WHISPER MODEL</label><select data-key="WHISPER_MODEL"><option>small</option><option>medium</option><option>base</option></select></div>
-      <div class="field"><label>TTS ENGINE</label><select data-key="TTS_ENGINE"><option>auto</option><option>piper</option><option>edge</option><option>xtts</option></select></div>
+      <div class="field"><label>Голос</label><select data-key="TTS_ENGINE"><option value="edge">Dmitry · через интернет</option><option value="piper">Piper · без интернета</option><option value="auto">Автоматический выбор</option><option value="xtts">XTTS · по записи голоса</option></select><small>Edge отправляет текст в Microsoft. Piper работает на компьютере; XTTS требует чистого образца.</small></div>
+      <div class="field"><label>Подача голоса</label><select data-key="JARVIS_VOICE_STYLE"><option value="lively">Живой</option><option value="calm">Спокойный</option><option value="neutral">Нейтральный</option></select><small>Темп и интонация. В XTTS сохраняется характер голоса из образца.</small></div>
       <div class="field"><label>PIPER VOICE</label><select data-key="PIPER_VOICE"><option>dmitri</option><option>ruslan</option><option>denis</option><option>irina</option></select></div>
       <div class="field"><label>ТЕМП ГОЛОСА PIPER</label><input type="number" min="0.7" max="1.5" step="0.01" data-key="PIPER_LENGTH_SCALE"></div>
       <div class="field"><label>ВЫРАЗИТЕЛЬНОСТЬ PIPER</label><input type="number" min="0.1" max="1.5" step="0.05" data-key="PIPER_NOISE_SCALE"></div>
       <div class="field"><label>ПЛАВНОСТЬ PIPER</label><input type="number" min="0.1" max="1.5" step="0.05" data-key="PIPER_NOISE_W_SCALE"></div>
       <div class="field"><label>EDGE VOICE</label><input data-key="EDGE_VOICE"></div>
+      <div class="field"><label>Темп Edge, например -5%</label><input data-key="EDGE_RATE" pattern="[+-][0-9]+%"><small>Edge передаёт текст для озвучивания в облако Microsoft.</small></div>
+      <div class="field"><label>Высота Edge, например -10Hz</label><input data-key="EDGE_PITCH" pattern="[+-][0-9]+Hz"></div>
+      <div class="field"><label>Темп голоса XTTS по образцу</label><input type="number" min="0.85" max="1.15" step="0.01" data-key="XTTS_SPEED"></div>
+      <div class="field"><label>Язык голоса XTTS</label><select data-key="XTTS_LANGUAGE"><option value="ru">Русский</option><option value="en">Английский</option></select></div>
       <div class="field"><label>ПАУЗА ДО КОНЦА ФРАЗЫ, С</label><input type="number" min="1" max="6" step="0.1" data-key="JARVIS_PAUSE_THRESHOLD"></div>
       <div class="field"><label>МАКС. ФРАЗА, С</label><input type="number" min="10" max="120" data-key="JARVIS_PHRASE_TIME_LIMIT"></div>
       <div class="field"><label>ОКНО ПОСЛЕ WAKE, С</label><input type="number" min="3" max="30" data-key="JARVIS_WAKE_COMMAND_WINDOW"></div>
-      <div class="field"><label>FOLLOW-UP</label><select data-key="JARVIS_FOLLOWUP_MODE"><option value="strict">strict</option><option value="normal">normal</option><option value="off">off</option></select></div>
+      <div class="field"><label>FOLLOW-UP</label><select data-key="JARVIS_FOLLOWUP_MODE"><option value="smart">С проверкой обращения</option><option value="strict">По ключевым словам</option><option value="normal">Любая речь (без проверки адресата)</option><option value="off">Только по имени</option></select></div>
       <div class="field"><label>FOLLOW-UP WINDOW, С</label><input type="number" min="0" max="60" data-key="JARVIS_FOLLOWUP_WINDOW"></div>
       <div class="field"><label>COOLDOWN ПОСЛЕ РЕЧИ, С</label><input type="number" min="0.3" max="5" step="0.1" data-key="JARVIS_SPEAK_COOLDOWN"></div>
       <div class="field"><label>МИКРОФОН</label><select data-key="JARVIS_MIC_INDEX" id="micSelect"><option value="">по умолчанию</option></select></div>
       <div class="field"><label>OVERLAY</label><select data-key="JARVIS_OVERLAY"><option>on</option><option>off</option></select></div>
       <div class="field"><label>OPENROUTER KEY (оставьте пустым без изменения)</label><input type="password" data-key="OPENROUTER_API_KEY" placeholder="••••••••"></div>
       <div class="telegram-auth">
-        <h3>TELEGRAM — ЛИЧНЫЙ АККАУНТ</h3>
+        <h3>Личный аккаунт Telegram</h3>
         <div class="field"><label>API ID</label><input inputmode="numeric" data-key="TELEGRAM_API_ID" placeholder="12345678"></div>
         <div class="field"><label>API HASH (оставьте пустым без изменения)</label><input type="password" data-key="TELEGRAM_API_HASH" placeholder="••••••••"></div>
         <div class="field"><label>ТЕЛЕФОН</label><input data-key="TELEGRAM_PHONE" placeholder="+79991234567"></div>
-        <div class="field"><label>КОД ИЗ TELEGRAM</label><input id="telegramCode" inputmode="numeric" autocomplete="one-time-code"></div>
-        <div class="field"><label>ПАРОЛЬ 2FA (не сохраняется)</label><input id="telegramPassword" type="password" autocomplete="off"></div>
-        <div class="telegram-actions"><button class="btn" id="telegramCodeBtn">получить код</button><button class="btn" id="telegramLoginBtn">подключить</button><button class="btn" id="telegramStatusBtn">проверить</button></div>
+        <div class="field"><label>Код из Telegram</label><input id="telegramCode" inputmode="numeric" autocomplete="one-time-code"></div>
+        <div class="field"><label>Пароль 2FA · не сохраняется</label><input id="telegramPassword" type="password" autocomplete="off"></div>
+        <div class="telegram-actions"><button class="btn secondary" id="telegramCodeBtn">Получить код</button><button class="btn secondary" id="telegramLoginBtn">Подключить</button><button class="btn secondary" id="telegramStatusBtn">Проверить</button></div>
         <div class="telegram-status" id="telegramStatus">Telegram не проверен.</div>
         <div class="telegram-help">API ID и API Hash создаются один раз на официальном сайте my.telegram.org/apps. Сессия хранится только локально.</div>
       </div>
     </div>
-    <div class="settings-actions"><button class="btn" id="diagBtn">диагностика</button><button class="btn" id="saveSettings">сохранить</button></div>
-    <div class="settings-note" id="settingsNote">Изменения применяются после перезапуска.</div><div class="diag" id="diagBox">—</div>
+    </div><div class="settings-actions"><button class="btn secondary" id="diagBtn">Диагностика</button><button class="btn primary" id="saveSettings">Сохранить</button></div>
+    <div class="settings-note" id="settingsNote" role="status" aria-live="polite">Настройки применяются без перезапуска.</div><div class="diag" id="diagBox">—</div>
   </div>
 
-  <div class="jv-top">
-    <div class="jv-brand">J.A.R.V.I.S.<small>just a rather very intelligent system</small></div>
-    <div class="jv-sys">
-      <div><span class="dot"></span>СИСТЕМЫ В СЕТИ</div>
-      <div>GPU <b>RTX&nbsp;5070</b> · STT <b>whisper</b> · TTS <b>piper</b></div>
-    </div>
-  </div>
 
-  <div class="jv-stage">
-    <div class="panel side-l">
-      <h3>Диалог</h3>
-      <div class="jv-log" id="log"></div>
-    </div>
-
-    <div class="jv-core">
-      <div class="orb-wrap"><canvas id="orb" width="800" height="800"></canvas></div>
-      <div class="state-label" id="stLabel">ожидание</div>
-      <div class="state-sub" id="stSub">скажите «Джарвис…»</div>
-      <div class="lat" id="lat">
-        <span id="lStt">STT <b>—</b></span>
-        <span id="lLlm">LLM <b>—</b></span>
-        <span id="lTts">TTS <b>—</b></span>
-        <span id="lSum" class="sum">Σ <b>—</b></span>
-      </div>
-    </div>
-  </div>
-
-  <div class="jv-ctl">
-    <div class="seg" id="seg">
-      <button data-s="idle" class="on">ожидание</button>
-      <button data-s="listening">слушает</button>
-      <button data-s="thinking">думает</button>
-      <button data-s="speaking">говорит</button>
-    </div>
-    <input id="cmd" placeholder="напишите команду…  напр. «какая погода в Москве»" />
-    <button class="btn" id="demo">▶ демо-диалог</button>
-  </div>
 </div>
-
-<script>
-(function(){
-  var root=document.getElementById('jvRoot');
-  var cv=document.getElementById('orb'), ctx=cv.getContext('2d');
-  var DPR=Math.min(2,window.devicePixelRatio||1), SZ=400;
-  cv.width=SZ*DPR; cv.height=SZ*DPR; ctx.scale(DPR,DPR);
-  var W=SZ,H=SZ,cx=W/2,cy=H/2;
-  var reduce=window.matchMedia('(prefers-reduced-motion:reduce)').matches;
-
-  var PAL={
-    idle:     {a:[90,150,255], b:[150,110,255]},
-    listening:{a:[74,168,255], b:[120,150,255]},
-    thinking: {a:[150,107,255],b:[110,80,255]},
-    speaking: {a:[86,200,255], b:[150,120,255]}
-  };
-  var CSS={idle:'#7f9bff',listening:'#4aa8ff',thinking:'#9b6bff',speaking:'#56c8ff'};
-  var LABEL={idle:'ожидание',listening:'слушаю',thinking:'обрабатываю',speaking:'отвечаю'};
-  var SUB={idle:'скажите «Джарвис…»',listening:'распознаю речь…',thinking:'думаю над ответом…',speaking:'синтезирую голос…'};
-  var state='idle', t=0, amp=0, ampTarget=0;
-
-  var N=620, PTS=[];
-  for(var i=0;i<N;i++){
-    var y=1-(i/(N-1))*2, r=Math.sqrt(1-y*y), th=i*2.399963;
-    PTS.push({x:Math.cos(th)*r, y:y, z:Math.sin(th)*r, n:Math.random()});
-  }
-  var floaters=[]; for(var f=0;f<46;f++) floaters.push({a:Math.random()*6.28,d:0.9+Math.random()*0.7,sp:0.001+Math.random()*0.003,ph:Math.random()*6.28,rz:Math.random()});
-
-  function mix(c1,c2,k){return [c1[0]+(c2[0]-c1[0])*k|0, c1[1]+(c2[1]-c1[1])*k|0, c1[2]+(c2[2]-c1[2])*k|0];}
-  function rgba(c,a){return 'rgba('+c[0]+','+c[1]+','+c[2]+','+a+')';}
-
-  var curA=PAL.idle.a.slice(), curB=PAL.idle.b.slice(), spinCur=0.002, spkCur=0;
-
-  function setState(s){
-    if(!PAL[s])return;
-    state=s;
-    document.getElementById('stLabel').textContent=LABEL[s];
-    document.getElementById('stSub').textContent=SUB[s];
-    root.style.setProperty('--accent',CSS[s]);
-    document.querySelectorAll('#seg button').forEach(function(b){b.classList.toggle('on',b.dataset.s===s)});
-    if(s==='listening') clearLat();
-  }
-  window.jvSetState=setState;
-  window.jvSetSub=function(txt){document.getElementById('stSub').textContent=txt||SUB[state]||'';};
-
-  function tickAmp(){
-    if(state==='listening') ampTarget=0.34+0.26*Math.abs(Math.sin(t*0.045))+0.10*Math.abs(Math.sin(t*0.12));
-    else if(state==='speaking') ampTarget=0.32+0.30*Math.abs(Math.sin(t*0.04))+0.12*Math.abs(Math.sin(t*0.10));
-    else if(state==='thinking') ampTarget=0.16;
-    else ampTarget=0.05+Math.abs(Math.sin(t*0.03))*0.05;
-    amp+=(ampTarget-amp)*0.05;
-  }
-
-  function draw(){
-    t+= reduce?0.25:1; tickAmp();
-    ctx.clearRect(0,0,W,H);
-    var tp=PAL[state];
-    for(var e=0;e<3;e++){curA[e]+=(tp.a[e]-curA[e])*0.05; curB[e]+=(tp.b[e]-curB[e])*0.05;}
-    var pal={a:curA,b:curB}, col=mix(curA,curB,0.5);
-    var spinTarget= state==='thinking'?0.008: state==='listening'?0.003: state==='speaking'?0.00225:0.002;
-    spinCur+=(spinTarget-spinCur)*0.04; var spin=spinCur;
-    spkCur+=((state==='speaking'?1:0)-spkCur)*0.04;
-    var ax=t*spin, ay=t*spin*0.55;
-    var cosY=Math.cos(ax),sinY=Math.sin(ax),cosX=Math.cos(ay),sinX=Math.sin(ay);
-    var R=118*(1+amp*0.10);
-
-    var halo=ctx.createRadialGradient(cx,cy,10,cx,cy,180);
-    halo.addColorStop(0,rgba(pal.a,0.16+amp*0.14)); halo.addColorStop(0.4,rgba(pal.b,0.07)); halo.addColorStop(1,'rgba(0,0,0,0)');
-    ctx.fillStyle=halo; ctx.fillRect(0,0,W,H);
-
-    ctx.save(); ctx.translate(cx,cy);
-    for(var rr=0;rr<3;rr++){
-      ctx.save(); ctx.rotate(t*spin*(rr%2?-1:1)*0.8 + rr*1.1);
-      ctx.beginPath(); ctx.ellipse(0,0,150-rr*8,58-rr*6,0,0,Math.PI*2);
-      ctx.lineWidth=1.2; ctx.strokeStyle=rgba(mix(pal.a,pal.b,rr/2),0.28); ctx.stroke(); ctx.restore();
-    }
-    ctx.restore();
-
-    var proj=[];
-    for(var p=0;p<N;p++){
-      var P=PTS[p];
-      var disp=1 + amp*0.16*Math.sin(P.n*20+t*(0.015+spkCur*0.015));
-      var x=P.x*disp, y=P.y*disp, z=P.z*disp;
-      var x1=x*cosY - z*sinY, z1=x*sinY + z*cosY;
-      var y1=y*cosX - z1*sinX, z2=y*sinX + z1*cosX;
-      proj.push({sx:cx+x1*R, sy:cy+y1*R, z:z2, ny:(y+1)/2, n:P.n});
-    }
-    proj.sort(function(a,b){return a.z-b.z});
-    for(var q=0;q<proj.length;q++){
-      var o=proj[q], depth=(o.z+1)/2;
-      var c=mix(pal.a,pal.b,o.ny*0.7+0.15);
-      var sz=(0.7+depth*2.1)*(1+amp*0.4);
-      var al=0.12+depth*0.8;
-      al*=0.84+0.16*Math.sin(o.n*30+t*0.028);
-      ctx.beginPath(); ctx.arc(o.sx,o.sy,sz,0,Math.PI*2);
-      ctx.fillStyle=rgba(c,al); ctx.fill();
-      if(depth>0.82){
-        ctx.beginPath(); ctx.arc(o.sx,o.sy,sz*2.4,0,Math.PI*2);
-        ctx.fillStyle=rgba(c,al*0.10); ctx.fill();
-      }
-    }
-
-    for(var g=0;g<floaters.length;g++){
-      var fl=floaters[g]; fl.a+=fl.sp;
-      var rad=150+Math.sin(t*0.01+fl.ph)*22, fx=cx+Math.cos(fl.a)*rad*fl.d, fy=cy+Math.sin(fl.a)*rad*0.5*fl.d;
-      ctx.beginPath(); ctx.arc(fx,fy,fl.rz*1.4+0.4,0,Math.PI*2);
-      ctx.fillStyle=rgba(mix(pal.a,pal.b,fl.rz),0.25+0.35*Math.abs(Math.sin(t*0.05+fl.ph))); ctx.fill();
-    }
-
-    var pulse=1+amp*0.5;
-    var cg=ctx.createRadialGradient(cx,cy,1,cx,cy,46*pulse);
-    cg.addColorStop(0,'rgba(255,255,255,0.95)');
-    cg.addColorStop(0.28,rgba(pal.a,0.95));
-    cg.addColorStop(0.6,rgba(pal.b,0.5));
-    cg.addColorStop(1,'rgba(0,0,0,0)');
-    ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(cx,cy,46*pulse,0,Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx,cy,8*pulse,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fill();
-
-    requestAnimationFrame(draw);
-  }
-  draw();
-
-  var chips={stt:document.getElementById('lStt'),llm:document.getElementById('lLlm'),tts:document.getElementById('lTts'),sum:document.getElementById('lSum')};
-  function clearLat(){for(var k in chips){chips[k].classList.remove('show','lit'); chips[k].querySelector('b').textContent='—';}}
-  function litLat(key,val){var el=chips[key]; el.querySelector('b').textContent=val; el.classList.add('show','lit');}
-  window.jvLatency=litLat; window.jvClearLat=clearLat;
-  clearLat();
-
-  var log=document.getElementById('log');
-  function addMsg(who,text){
-    var d=document.createElement('div'); d.className='msg '+who;
-    var label=document.createElement('div'); label.className='who';
-    label.textContent=who==='user'?'Вы':'Джарвис';
-    d.appendChild(label); d.appendChild(document.createTextNode(String(text)));
-    log.appendChild(d); log.scrollTop=log.scrollHeight;
-  }
-  window.jvAddMsg=addMsg;
-
-  document.querySelectorAll('#seg button').forEach(function(b){b.onclick=function(){setState(b.dataset.s)}});
-
-  function runFlow(userText,reply,tShow){
-    addMsg('user',userText); setState('listening'); clearLat();
-    var stt=(0.14+Math.random()*0.08), llm=(0.55+Math.random()*0.35), tts=(0.12+Math.random()*0.06);
-    setTimeout(function(){setState('thinking'); litLat('stt',stt.toFixed(2)+'с');},600);
-    setTimeout(function(){litLat('llm',llm.toFixed(2)+'с');},600+llm*1000);
-    setTimeout(function(){setState('speaking'); litLat('tts',tts.toFixed(2)+'с'); litLat('sum',(0.35+stt+llm+tts).toFixed(2)+'с'); addMsg('jarvis',reply);},700+llm*1000);
-    setTimeout(function(){setState('idle');},900+llm*1000+Math.min(3600,reply.length*52));
-  }
-  window.jvConnected=function(){
-    var demoBtn=document.getElementById('demo'); if(demoBtn) demoBtn.style.display='none';
-    var seg=document.getElementById('seg'); if(seg) seg.style.display='none';
-    document.getElementById('cmd').placeholder='напишите команду Джарвису…';
-    loadSettings();
-  };
-
-  var settingsPanel=document.getElementById('settingsPanel'), settingsNote=document.getElementById('settingsNote');
-  document.getElementById('tbSettings').onclick=function(){settingsPanel.classList.toggle('open'); if(settingsPanel.classList.contains('open'))loadSettings();};
-  document.getElementById('settingsClose').onclick=function(){settingsPanel.classList.remove('open')};
-  function fillSettings(cfg){document.querySelectorAll('[data-key]').forEach(function(el){var k=el.dataset.key;if(k==='OPENROUTER_API_KEY'||k==='TELEGRAM_API_HASH')return;if(cfg[k]!==undefined)el.value=cfg[k];});if(cfg.TELEGRAM_API_HASH_SET)document.querySelector('[data-key="TELEGRAM_API_HASH"]').placeholder='•••••••• (сохранён)';}
-  function collectSettings(){var data={};document.querySelectorAll('[data-key]').forEach(function(el){if((el.dataset.key==='OPENROUTER_API_KEY'||el.dataset.key==='TELEGRAM_API_HASH')&&!el.value)return;data[el.dataset.key]=el.value;});return data;}
-  function refreshTelegramStatus(){var a=api(),box=document.getElementById('telegramStatus');if(!a||!a.telegram_status)return;box.textContent='Проверяю Telegram…';a.telegram_status().then(function(r){box.textContent=r.message||JSON.stringify(r);});}
-  function loadSettings(){
-    var a=api();if(!a||!a.get_settings)return;
-    var micProm=a.list_microphones?a.list_microphones().then(function(items){
-      var s=document.getElementById('micSelect');
-      while(s.firstChild)s.removeChild(s.firstChild);
-      var base=document.createElement('option');base.value='';base.textContent='по умолчанию';s.appendChild(base);
-      items.forEach(function(m){var o=document.createElement('option');o.value=m.index;o.textContent=m.index+' · '+m.name;s.appendChild(o);});
-    }):Promise.resolve();
-    micProm.then(function(){return a.get_settings();}).then(function(cfg){fillSettings(cfg);refreshTelegramStatus();});
-  }
-  document.getElementById('saveSettings').onclick=function(){var a=api();if(!a)return;a.save_settings(collectSettings()).then(function(r){settingsNote.textContent=r.message;refreshTelegramStatus();});};
-  document.getElementById('telegramStatusBtn').onclick=refreshTelegramStatus;
-  document.getElementById('telegramCodeBtn').onclick=function(){var a=api(),box=document.getElementById('telegramStatus');if(!a)return;a.save_settings(collectSettings()).then(function(saved){if(!saved.ok){box.textContent=saved.message;return;}box.textContent='Запрашиваю код…';a.telegram_send_code().then(function(r){box.textContent=r.message;});});};
-  document.getElementById('telegramLoginBtn').onclick=function(){var a=api(),box=document.getElementById('telegramStatus');if(!a)return;var code=document.getElementById('telegramCode').value,password=document.getElementById('telegramPassword').value;a.save_settings(collectSettings()).then(function(saved){if(!saved.ok){box.textContent=saved.message;return;}box.textContent='Подключаю Telegram…';a.telegram_sign_in(code,password).then(function(r){box.textContent=r.message;if(r.needs_password)document.getElementById('telegramCode').value='';if(r.authorized){document.getElementById('telegramCode').value='';document.getElementById('telegramPassword').value='';}});});};
-  document.getElementById('diagBtn').onclick=function(){var a=api();if(!a)return;a.diagnostics().then(function(d){document.getElementById('diagBox').textContent=JSON.stringify(d,null,2);});};
-  window.jvDiagnostics=function(d){document.getElementById('diagBox').textContent=JSON.stringify(d,null,2);};
-
-  function api(){ return (window.pywebview&&window.pywebview.api)||null; }
-  document.getElementById('tbMin').onclick=function(){ var a=api(); if(a&&a.minimize) a.minimize(); };
-  document.getElementById('tbClose').onclick=function(){ var a=api(); if(a&&a.close) a.close(); };
-  var _maximized=false;
-  document.getElementById('tbMax').onclick=function(){
-    var a=api(); if(!a) return;
-    var self=this, call=_maximized?a.restore():a.maximize();
-    Promise.resolve(call).then(function(ok){
-      if(ok===false)return;
-      _maximized=!_maximized;
-      self.textContent=_maximized?'❐':'□'; self.title=_maximized?'Восстановить':'Развернуть';
-    }).catch(function(){ self.title='Не удалось изменить размер окна'; });
-  };
-  var cmd=document.getElementById('cmd');
-  cmd.addEventListener('keydown',function(e){
-    if(e.key!=='Enter'||!cmd.value.trim()) return;
-    var text=cmd.value.trim(); cmd.value='';
-    if(window.pywebview&&window.pywebview.api&&window.pywebview.api.send_command){
-      window.pywebview.api.send_command(text);
-    } else {
-      runFlow(text,'Выполняю, сэр.');
-    }
-  });
-  var SCRIPT=[
-    ['Джарвис, какая погода в Москве?','В Москве сейчас минус три, ясно, сэр.'],
-    ['включи мою волну','Включаю, сэр.'],
-    ['поставь таймер на десять минут','Таймер на 10 минут запущен, сэр.'],
-    ['что нового в мире?','Секунду, обрабатываю, сэр… Готово.']
-  ];
-  var di=0;
-  document.getElementById('demo').onclick=function(){var p=SCRIPT[di%SCRIPT.length];di++;runFlow(p[0],p[1]);};
-})();
-</script>
+<dialog class="preview" id="preview">
+  <header><h2 id="previewTitle">Просмотр файла</h2><button class="tb-btn" id="previewClose" aria-label="Закрыть просмотр">×</button></header>
+  <pre id="previewText" tabindex="0"></pre><img id="previewImage" alt="Созданный снимок экрана" hidden>
+</dialog>
+<script src="jarvis.js"></script>
+</body>
+</html>

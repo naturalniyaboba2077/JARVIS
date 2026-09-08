@@ -1,0 +1,7 @@
+{
+  "name": "jarvis-ui-checks",
+  "private": true,
+  "description": "Optional DOM regression tests; not required to run the Python app",
+  "scripts": { "test:ui": "node --test ui/test-ui.cjs" },
+  "devDependencies": { "jsdom": "26.1.0" }
+}

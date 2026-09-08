@@ -13,6 +13,7 @@
 import datetime
 import os
 import re
+import queue
 import shutil
 import subprocess
 import sys
@@ -111,7 +112,7 @@ def extract_web_search_query(text: str) -> str | None:
     patterns = (
         r'^(?:пожалуйста\s+)?(?:погугли|загугли)\s+(.+)$',
         r'^(?:пожалуйста\s+)?(?:найди|поищи)\s+(?:информацию\s+)?(?:в|по)\s+'
-        r'(?:интернете|сети|гугле)\s+(?:информацию\s+)?(?:про|о|об)?\s*(.+)$',
+        r'(?:интернете|сети|гугле|google)\s+(?:информацию\s+)?(?:(?:про|об|о)\s+)?(.+)$',
         r'^(?:что|какая\s+информация)\s+(?:есть|известно)\s+(?:в|по)\s+(?:интернете|сети)\s+(?:про|о|об)\s+(.+)$',
     )
     for pattern in patterns:
@@ -155,6 +156,8 @@ def take_screenshot() -> str:
             else:
                 return "Скриншот недоступен: установите pyautogui или Pillow."
 
+        from jarvis_dashboard import register_file
+        register_file(filepath, title="Скриншот сохранён")
         return f"Скриншот сохранён: {filepath.name}"
     except Exception as e:
         return f"Ошибка скриншота: {e}"
@@ -203,48 +206,87 @@ def media_control(action: str) -> bool:
         print(f"Media control unavailable: {note}")
     return ok
 
+_SEARCH_SLOTS = threading.BoundedSemaphore(2)
+_SEARCH_DEADLINE = 18.0
+
+
 def search_web(query: str) -> str:
-    """Search the web and return a short, speakable summary."""
-    print(f"Ищу в интернете: {query}")
-    try:
-        results = []
-        last_error = None
-        for backend in ("duckduckgo", "startpage"):
-            try:
-                with DDGS(timeout=3) as ddgs:
-                    results = list(ddgs.text(
-                        query, max_results=2, region="ru-ru",
-                        safesearch="off", backend=backend))
-                if results:
-                    break
-            except Exception as error:
-                last_error = error
-        if not results and last_error:
-            raise last_error
-        summaries = []
-        seen = set()
-        for item in results:
-            title = re.sub(r'\s+', ' ', str(item.get("title") or "")).strip()
-            body = re.sub(r'\s+', ' ', str(item.get("body") or "")).strip()
-            if not body or body.lower() in seen:
-                continue
-            seen.add(body.lower())
-            piece = f"{title}: {body}" if title else body
-            summaries.append(piece[:260].rstrip())
-            if len(summaries) == 2:
-                break
-        if summaries:
-            answer = " Вот ещё: ".join(summaries)
-            return f"Вот что нашёл в интернете, сэр. {answer}"[:620].rstrip()
-        return "В интернете по этому запросу ничего не нашлось, сэр."
-    except Exception as e:
-        print(f"Search error: {e}")
-        jarvis_logger.warning(f"[WEB:SEARCH] {query!r}: {e}")
+    """Return sourced snippets, not an invented answer or a browser side effect.
+
+    Google/Bing are queried concurrently: the old forced DuckDuckGo connection
+    reset and Startpage empty response must not disable working engines. Native
+    requests cannot be killed, so global slots bound abandoned workers too.
+    """
+    query = (query or '').strip()
+    if not query:
+        return 'Укажите, что найти в интернете.'
+    cancel = _state.PipelineCancellation()
+    if cancel.is_set():
+        return 'Поиск прерван.'
+    completed = queue.Queue(maxsize=2)
+    slots = _SEARCH_SLOTS
+    from jarvis_ui import ui_state, ui_sub
+    ui_state('thinking')
+    ui_sub('Ищу в Google и Bing…')
+    def fetch(backend):
         try:
-            os.startfile("https://www.google.com/search?q=" + urllib.parse.quote(query))
-            return "Поиск временно не ответил, поэтому я открыл результаты Google, сэр."
-        except Exception:
-            return "Не удалось связаться с поиском, сэр."
+            with DDGS(timeout=5) as engine:
+                rows = list(engine.text(query, max_results=3, region='ru-ru',
+                                        safesearch='off', backend=backend))
+            completed.put_nowait((backend, rows, ''))
+        except Exception as exc:
+            # Raw exceptions can contain request/proxy credentials; only type in logs.
+            completed.put_nowait((backend, [], type(exc).__name__))
+        finally:
+            slots.release()
+    started = 0
+    for backend in ('google', 'bing'):
+        if slots.acquire(blocking=False):
+            worker = threading.Thread(target=fetch, args=(backend,), name='jarvis-search', daemon=True)
+            try:
+                worker.start()
+                started += 1
+            except Exception:
+                slots.release()
+                raise
+    deadline = time.monotonic() + _SEARCH_DEADLINE
+    finished, errors = 0, []
+    while finished < started and time.monotonic() < deadline:
+        if cancel.is_set():
+            return 'Поиск прерван.'
+        try:
+            backend, rows, error = completed.get(timeout=min(.1, max(.001, deadline - time.monotonic())))
+        except queue.Empty:
+            continue
+        finished += 1
+        summaries, seen = [], set()
+        for item in rows[:3]:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get('href') or item.get('url') or '')
+            try:
+                parsed = urllib.parse.urlsplit(url)
+            except ValueError:
+                continue
+            if parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username or parsed.password or url in seen:
+                continue
+            title = re.sub(r'\s+', ' ', str(item.get('title') or '')).strip()[:160]
+            body = re.sub(r'\s+', ' ', str(item.get('body') or '')).strip()[:280]
+            if not body:
+                continue
+            seen.add(url)
+            summaries.append(f'{title}\n{body}\nИсточник: {url}')
+        if summaries:
+            if cancel.is_set():
+                return 'Поиск прерван.'
+            import jarvis_dashboard as dashboard
+            dashboard.record('search', f'Поиск: {query}', '\n'.join(summaries)[:4000])
+            jarvis_logger.info('[WEB:SEARCH] engine=%s results=%s', backend, len(summaries))
+            return 'Нашёл в интернете. Выдержки из поисковой выдачи (страницы целиком не читались):\n\n' + '\n\n'.join(summaries)
+        errors.append(f'{backend}: {error or "нет подходящих результатов"}')
+    reason = '; '.join(errors) or ('предыдущий поиск ещё завершается' if not started else 'истёк срок ожидания')
+    jarvis_logger.warning('[WEB:SEARCH] %s', reason)
+    return f'Не получил результаты поиска: {reason}. Ничего не открывал. Можно повторить запрос или открыть Google отдельно.'
 
 def type_text(text: str) -> bool:
     """Type text into the active window using the clipboard to support Russian."""

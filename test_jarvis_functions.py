@@ -63,7 +63,7 @@ sys.modules['speech_recognition'] = _MockSR()
 import asyncio
 
 class _FakeCommunicate:
-    def __init__(self, text, voice): pass
+    def __init__(self, text, voice, **kwargs): pass
     async def save(self, path): pass
 
 class _MockEdgeTTS:
@@ -261,7 +261,7 @@ def test_tag_parsing():
 
         actions_taken.clear()
         result = parse_and_execute_tags("[OPEN:calc]", "открой браузер")
-        check("Tag takes priority over fallback (calc executed)", any("calc" in a for a in actions_taken))
+        check("Wrong model tag cannot override the requested app", not actions_taken and "не совпадает" in result)
 
         actions_taken.clear()
         result = parse_and_execute_tags("", "")

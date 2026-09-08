@@ -383,14 +383,6 @@ def start_reminder_worker(speak_fn=None) -> None:
 
 # ── Files ───────────────────────────────────────────────────────────────────
 
-_FILE_ROOTS = [
-    Path.home() / "Downloads",
-    Path.home() / "Desktop",
-    Path.home() / "Documents",
-    Path.home() / "Pictures",
-]
-
-
 def open_latest_download() -> str:
     folder = Path.home() / "Downloads"
     if not folder.is_dir():
@@ -407,58 +399,13 @@ def open_latest_download() -> str:
 
 
 def find_files(query: str, limit: int = 5) -> str:
-    q = (query or "").strip().lower()
-    if not q:
-        return "Не понял, какой файл искать, сэр."
-    hits: list[tuple[float, Path]] = []
-    for root in _FILE_ROOTS:
-        if not root.is_dir():
-            continue
-        try:
-            for dirpath, dirnames, filenames in os.walk(root):
-                # keep walk shallow-ish
-                depth = Path(dirpath).relative_to(root).parts
-                if len(depth) > 3:
-                    dirnames[:] = []
-                    continue
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")
-                               and d.lower() not in {"node_modules", ".git", "__pycache__"}]
-                for name in filenames:
-                    if q in name.lower():
-                        p = Path(dirpath) / name
-                        try:
-                            hits.append((p.stat().st_mtime, p))
-                        except OSError:
-                            continue
-                if len(hits) >= 40:
-                    break
-        except Exception:
-            continue
-        if len(hits) >= 40:
-            break
-    if not hits:
-        return f"Файл «{query}» не нашёл, сэр."
-    hits.sort(key=lambda x: x[0], reverse=True)
-    top = hits[:limit]
-    # auto-open best match if unique-ish
-    best = top[0][1]
-    try:
-        os.startfile(str(best))
-    except Exception:
-        pass
-    names = ", ".join(p.name for _, p in top)
-    return f"Нашёл и открыл {best.name}. Ещё: {names}, сэр." if len(top) > 1 else f"Открыл {best.name}, сэр."
+    from jarvis_local_files import find_files as find
+    return find(query, limit)
 
 
 def open_path(path_str: str) -> str:
-    p = Path((path_str or "").strip().strip('"'))
-    if not p.exists():
-        return f"Путь не найден: {path_str}, сэр."
-    try:
-        os.startfile(str(p))
-        return f"Открыл {p.name}, сэр."
-    except Exception as e:
-        return f"Не удалось открыть: {e}"
+    from jarvis_local_files import open_named
+    return open_named(path_str, kind="directory" if Path(path_str.strip('"')).is_dir() else "file")
 
 
 # ── OCR ─────────────────────────────────────────────────────────────────────
@@ -726,11 +673,12 @@ def handle_feature_command(text: str, last_reply: str = "") -> str | None:
         return window_switch(sw.group(1).strip())
 
     # Files
+    from jarvis_local_files import handle_file_command
+    file_result = handle_file_command(text)
+    if file_result is not None:
+        return file_result
     if re.fullmatch(r"(?:открой последн\w* загрузк\w*|последняя загрузка)", t):
         return open_latest_download()
-    fm = re.fullmatch(r"(?:найди|открой)\s+файл\s+(.+)", t)
-    if fm:
-        return find_files(fm.group(1).strip())
 
     # OCR
     if re.fullmatch(r"(?:что на экране|прочитай экран|ocr экрана)", t):
@@ -761,8 +709,9 @@ def arm_hotkey_listen(command_queue, wake_seconds: float = 10.0) -> None:
 
     def _fire():
         try:
-            command_queue.put(("__HOTKEY__", float(wake_seconds)))
-            log.info(f"[HOTKEY] Ctrl+Alt+J → окно команд {wake_seconds:.0f} с")
+            seconds = float(wake_seconds() if callable(wake_seconds) else wake_seconds)
+            command_queue.put(("__HOTKEY__", seconds))
+            log.info(f"[HOTKEY] Ctrl+Alt+J → окно команд {seconds:.0f} с")
         except Exception as e:
             log.warning(f"[HOTKEY] {e}")
 

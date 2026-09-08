@@ -19,6 +19,7 @@ from difflib import SequenceMatcher
 import numpy as np
 
 import jarvis_state as _state
+import jarvis_dashboard as _dashboard
 from jarvis_log import jarvis_logger
 
 __all__ = [
@@ -27,7 +28,7 @@ __all__ = [
     "WAKE_ONSET_RE", "WAKE_ONSET_THRESHOLD", "WAKE_ONSET_MIN_LEN",
     "WAKE_BLOCKLIST",
     "transcribe_whisper", "transcribe_speech", "warmup_whisper",
-    "contains_wake_word", "strip_wake_word",
+    "contains_wake_word", "strip_wake_word", "is_direct_address", "normalize_voice_command",
     "_wake_tokens", "_is_wake_token", "_wake_indices", "_audio_duration",
     "_whisper_available", "_load_whisper", "_setup_cuda_dll_paths",
 ]
@@ -52,10 +53,15 @@ WAKE_ONSET_RE = re.compile(r"^(?:джа|жарв)", re.UNICODE)
 WAKE_ONSET_THRESHOLD = 0.60
 WAKE_ONSET_MIN_LEN = 5
 
-WAKE_BLOCKLIST = frozenset({"дарвин", "давись"})
+# The owner corrected the accidental alternate name; do not re-admit it through
+# fuzzy matching (particularly the permissive 'джа' onset fallback).
+WAKE_BLOCKLIST = frozenset({"дарвин", "давись", "чарльз", "charles", "шарльз",
+                            "шарлес", "чарлес", "джарльз", "джарльес"})
+ADDRESS_FILLERS = frozenset({"эй", "ну", "и", "слушай", "пожалуйста", "привет"})
 
 
 STT_ENGINE = os.getenv("STT_ENGINE", "whisper").lower()
+from jarvis_settings import activity as _settings_activity
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "small")
 _whisper_model = None
 _whisper_tried = False
@@ -89,13 +95,13 @@ def _setup_cuda_dll_paths():
 def _load_whisper():
     """Lazy-load the whisper model. GPU first, CPU fallback."""
     global _whisper_tried
-    if _whisper_model is not None or _whisper_tried:
-        return _whisper_model
     with _whisper_lock:
         if _whisper_model is not None or _whisper_tried:
             return _whisper_model
-        _whisper_tried = True
-        return _load_whisper_locked()
+        try:
+            return _load_whisper_locked()
+        finally:
+            _whisper_tried = True
 
 
 def _load_whisper_locked():
@@ -156,17 +162,25 @@ def transcribe_whisper(audio) -> str | None:
 
 
 # переводим речь в текст
+@_settings_activity
 def transcribe_speech(recognizer, audio) -> str:
     """Unified STT: local whisper if available, else Google. '' means no speech."""
     started = time.perf_counter()
     if _whisper_available():
         t = transcribe_whisper(audio)
         if t is not None:
+            _dashboard.service("stt", engine="whisper", model=WHISPER_MODEL_SIZE, status="ready")
             jarvis_logger.debug(f"[STT:metrics] engine=whisper "
                                 f"audio={_audio_duration(audio):.2f}s "
                                 f"transcribe={_state.last_stt_ms:.0f}ms chars={len(t)}")
             return t
-    result = recognizer.recognize_google(audio, language="ru-RU")
+    _dashboard.service("stt", engine="google", status="working")
+    try:
+        result = recognizer.recognize_google(audio, language="ru-RU")
+    except Exception:
+        _dashboard.service("stt", engine="google", status="error", detail="Не удалось распознать речь")
+        raise
+    _dashboard.service("stt", engine="google", status="ready")
     _state.last_stt_ms = (time.perf_counter() - started) * 1000.0
     jarvis_logger.debug(f"[STT:metrics] engine=google "
                         f"audio={_audio_duration(audio):.2f}s "
@@ -174,6 +188,7 @@ def transcribe_speech(recognizer, audio) -> str:
     return result
 
 
+@_settings_activity
 def warmup_whisper():
     """Pre-load + JIT-compile whisper so the first real command isn't cold (~1s)."""
     model = _load_whisper()
@@ -221,6 +236,8 @@ def _wake_indices(text: str):
         if _is_wake_token(tok):
             return toks, {i}
     for i, (a, b) in enumerate(zip(toks, toks[1:])):
+        if a in WAKE_BLOCKLIST or b in WAKE_BLOCKLIST:
+            continue
         if _is_wake_token(a + b):
             return toks, {i, i + 1}
     return toks, None
@@ -232,13 +249,51 @@ def contains_wake_word(text: str) -> bool:
     return _wake_indices(text)[1] is not None
 
 
-def strip_wake_word(text: str) -> str:
-    """Remove the wake word (however it was transcribed) and return the command."""
+def is_direct_address(text: str) -> bool:
+    """An address at a phrase boundary, not a mention in reported speech."""
     toks, idx = _wake_indices(text)
     if idx is None:
-        return re.sub(r"\s+", " ", " ".join(toks)).strip(" ,!?.:")
-    rest = [t for i, t in enumerate(toks) if i not in idx]
-    return re.sub(r"\s+", " ", " ".join(rest)).strip(" ,!?.:")
+        return False
+    first, last = min(idx), max(idx)
+    spans = list(re.finditer(r"\w+", text, re.UNICODE))
+    before, after = text[:spans[first].start()], text[spans[last].end():]
+    # A project/file named Jarvis, or a name inside a quoted path, is an object,
+    # not an address. A suffix/middle vocative needs punctuation from STT.
+    if before.count('"') % 2 or before.count('«') > before.count('»') or before.endswith(('\\', '/')):
+        return False
+    if first <= 3 and all(t in ADDRESS_FILLERS for t in toks[:first]):
+        return True
+    if last == len(toks) - 1 and first > 0:
+        prefix = " ".join(toks[:first])
+        return ((before.rstrip().endswith(',') or prefix in {"стоп", "спасибо"})
+                and toks[first - 1] not in {"про", "о", "об", "у", "к", "для", "это", "такое", "такой", "зовут", "называется", "проект", "файл", "папку", "названием"}
+                and bool(re.match(r"^(?:пожалуйста )?(?:открой|проверь|скажи|расскажи|найди|сделай|что|как|почему|ты|спасибо|стоп)\b", prefix)))
+    if before.rstrip().endswith(',') and after.lstrip().startswith(','):
+        return bool(re.match(r"^(?:пожалуйста )?(?:проверь|найди|открой|сделай|скажи|расскажи)\b", " ".join(toks[:first])))
+    return False
+
+
+def strip_wake_word(text: str) -> str:
+    """Remove only the address span; paths, quotes and punctuation survive."""
+    toks, idx = _wake_indices(text)
+    if idx is None:
+        return text.strip()
+    spans = list(re.finditer(r"\w+", text, re.UNICODE))
+    first, last = min(idx), max(idx)
+    start, end = spans[first].start(), spans[last].end()
+    if first <= 3 and all(t in ADDRESS_FILLERS for t in toks[:first]):
+        start = 0
+    before = text[:start].rstrip(" ,!?.:;")
+    after = text[end:].lstrip(" ,!?.:;")
+    return (before + (" " if before and after else "") + after).strip()
+
+
+def normalize_voice_command(text: str) -> str:
+    """Constrained ASR repair: only the read-only project-inspection verb."""
+    text = re.sub(r"^(пожалуйста[, ]+)?(?:поверь|провер|провери)(?=[, ]+проект\b)",
+                  lambda m: (m[1] or "") + "проверь", text, flags=re.I)
+    text = re.sub(r"^((?:пожалуйста[, ]+)?проверь),\s*", r"\1 ", text, flags=re.I)
+    return re.sub(r"^((?:пожалуйста[, ]+)?проверь\s+проект),\s*", r"\1 ", text, flags=re.I)
 
 
 def _audio_duration(audio) -> float:

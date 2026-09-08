@@ -120,6 +120,9 @@ def _web_search_snippets(query: str, max_results: int = 4) -> list[str]:
 
 def _lookup_report_bot_config() -> tuple[str, str]:
     cfg = _read_config_file()
+    from jarvis_settings import settings
+    if settings.enabled:
+        cfg = os.environ
     token = str(cfg.get("TELEGRAM_REPORT_BOT_TOKEN") or os.getenv("TELEGRAM_REPORT_BOT_TOKEN") or "").strip()
     chat_id = str(cfg.get("TELEGRAM_REPORT_CHAT_ID") or os.getenv("TELEGRAM_REPORT_CHAT_ID") or "").strip()
     return token, chat_id
@@ -234,6 +237,5 @@ def lookup_identity(kind: str, value: str) -> str:
         spoken_core = spoken_core[:277] + "…"
     web_note = f" В сети {len(web_lines)} упоминаний." if web_lines else " В открытом вебе почти ничего."
     return f"{spoken_core}{web_note} {delivery}"
-
 
 

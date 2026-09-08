@@ -36,17 +36,25 @@ APP_VERSION = "1.2.0"
 _CONFIG_LOCK = threading.RLock()
 
 UI_SETTING_KEYS = {
-    "JARVIS_LLM", "OLLAMA_MODEL", "OPENROUTER_MODEL", "OPENROUTER_FREE_MODEL",
+    "JARVIS_LLM", "OLLAMA_MODEL", "LM_STUDIO_URL", "LM_STUDIO_MODEL", "LM_STUDIO_CODE_MODEL",
+    "OPENROUTER_MODEL", "OPENROUTER_FREE_MODEL",
     "OPENROUTER_AGENT_MODEL", "JARVIS_PROJECT_ROOTS", "SESSION_MEMORY", "STT_ENGINE",
-    "WHISPER_MODEL", "TTS_ENGINE", "PIPER_VOICE", "EDGE_VOICE",
+    "WHISPER_MODEL", "TTS_ENGINE", "PIPER_VOICE", "EDGE_VOICE", "EDGE_RATE", "EDGE_PITCH", "JARVIS_VOICE_STYLE",
     "PIPER_LENGTH_SCALE", "PIPER_NOISE_SCALE", "PIPER_NOISE_W_SCALE",
-    "JARVIS_LLM_DEADLINE", "JARVIS_LLM_DEADLINE_CLOUD", "JARVIS_LLM_GEN_BUDGET",
+    "JARVIS_LLM_DEADLINE", "JARVIS_LLM_DEADLINE_CLOUD", "JARVIS_LLM_DEADLINE_LM_STUDIO",
+    "JARVIS_LLM_GEN_BUDGET",
+    "LM_STUDIO_AUTOLOAD", "LM_STUDIO_GPU", "LM_STUDIO_CONTEXT", "XTTS_SPEED", "XTTS_LANGUAGE",
     "JARVIS_PAUSE_THRESHOLD", "JARVIS_WAKE_COMMAND_WINDOW",
     "JARVIS_PHRASE_TIME_LIMIT", "JARVIS_FOLLOWUP_WINDOW",
     "JARVIS_SPEAK_COOLDOWN",
     "JARVIS_FOLLOWUP_MODE", "JARVIS_MIC_INDEX", "JARVIS_OVERLAY",
     "TELEGRAM_API_ID", "TELEGRAM_PHONE",
 }
+
+SECRET_SETTING_KEYS = {"OPENROUTER_API_KEY", "TELEGRAM_API_HASH", "TELEGRAM_REPORT_BOT_TOKEN"}
+WRITABLE_SETTING_KEYS = UI_SETTING_KEYS | SECRET_SETTING_KEYS | {"TELEGRAM_REPORT_CHAT_ID"}
+# Capture genuine process overrides BEFORE copying the JSON into os.environ.
+ENV_OVERRIDES = {key: os.environ[key] for key in WRITABLE_SETTING_KEYS if os.getenv(key)}
 
 
 def _read_config_snapshot() -> tuple[dict, bytes | None]:
@@ -88,7 +96,7 @@ def _atomic_write_config_bytes(path: Path, content: bytes) -> None:
 
 
 def _write_config_file(updates: dict) -> tuple[bool, str]:
-    """Persist validated UI settings. Most engine settings apply on restart."""
+    """Persist validated settings; the runtime coordinator applies UI updates."""
     # Hold the lock across read/merge/backup/replace, not just the final write.
     with _CONFIG_LOCK:
         return _write_config_file_locked(updates)
@@ -102,15 +110,18 @@ def _write_config_file_locked(updates: dict) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Не удалось прочитать конфигурацию; настройки не изменены: {e}"
     allowed_values = {
-        "JARVIS_LLM": {"local", "cloud"}, "STT_ENGINE": {"whisper", "google"},
+        "JARVIS_LLM": {"local", "cloud", "lmstudio"}, "STT_ENGINE": {"whisper", "google"},
         "TTS_ENGINE": {"auto", "piper", "edge", "xtts"},
+        "JARVIS_VOICE_STYLE": {"lively", "calm", "neutral"},
         "JARVIS_OVERLAY": {"on", "off"},
-        "JARVIS_FOLLOWUP_MODE": {"strict", "normal", "off"},
+        "JARVIS_FOLLOWUP_MODE": {"smart", "strict", "normal", "off"},
         "SESSION_MEMORY": {"on", "off"},
+        "LM_STUDIO_AUTOLOAD": {"on", "off"}, "XTTS_LANGUAGE": {"ru", "en"},
     }
     numeric = {
-        "JARVIS_LLM_DEADLINE": (0.2, 15.0),
+        "JARVIS_LLM_DEADLINE": (0.2, 60.0),
         "JARVIS_LLM_DEADLINE_CLOUD": (1.0, 30.0),
+        "JARVIS_LLM_DEADLINE_LM_STUDIO": (1.0, 60.0),
         "JARVIS_LLM_GEN_BUDGET": (1.0, 60.0),
         "JARVIS_PAUSE_THRESHOLD": (1.0, 6.0),
         "JARVIS_WAKE_COMMAND_WINDOW": (3.0, 30.0),
@@ -120,6 +131,7 @@ def _write_config_file_locked(updates: dict) -> tuple[bool, str]:
         "PIPER_LENGTH_SCALE": (0.7, 1.5),
         "PIPER_NOISE_SCALE": (0.1, 1.5),
         "PIPER_NOISE_W_SCALE": (0.1, 1.5),
+        "XTTS_SPEED": (0.85, 1.15), "LM_STUDIO_GPU": (0.0, 1.0), "LM_STUDIO_CONTEXT": (2048, 32768),
     }
     for key, value in updates.items():
         if key in {"OPENROUTER_API_KEY", "TELEGRAM_API_HASH", "TELEGRAM_REPORT_BOT_TOKEN"}:
@@ -134,6 +146,8 @@ def _write_config_file_locked(updates: dict) -> tuple[bool, str]:
         value = str(value).strip()
         if key in allowed_values and value.lower() not in allowed_values[key]:
             return False, f"Недопустимое значение {key}."
+        if key in allowed_values:
+            value = value.lower()
         if key in numeric:
             try:
                 number = float(value)
@@ -142,11 +156,21 @@ def _write_config_file_locked(updates: dict) -> tuple[bool, str]:
             lo, hi = numeric[key]
             if not lo <= number <= hi:
                 return False, f"{key}: допустимо от {lo} до {hi}."
+            if key == "LM_STUDIO_CONTEXT":
+                if not number.is_integer():
+                    return False, "Контекст LM Studio должен быть целым числом."
+                value = str(int(number))
+        if key in {"EDGE_RATE", "EDGE_PITCH"}:
+            unit = "%" if key == "EDGE_RATE" else "Hz"
+            match = re.fullmatch(r"([+-]\d+)" + unit, value)
+            if not match or not -30 <= int(match[1]) <= 30:
+                return False, f"{key}: укажите от -30{unit} до +30{unit}, включая знак."
         if key == "JARVIS_MIC_INDEX" and value:
             try:
-                int(value)
+                if int(value) < 0:
+                    raise ValueError
             except ValueError:
-                return False, "Индекс микрофона должен быть целым числом."
+                return False, "Индекс микрофона должен быть неотрицательным целым числом."
         if key == "TELEGRAM_API_ID" and value:
             try:
                 if int(value) <= 0:
@@ -162,7 +186,7 @@ def _write_config_file_locked(updates: dict) -> tuple[bool, str]:
             backup = CONFIG_PATH.with_name(CONFIG_PATH.name + ".bak")
             _atomic_write_config_bytes(backup, original)
         _atomic_write_config_bytes(CONFIG_PATH, content)
-        return True, "Настройки сохранены. Перезапустите Джарвис для применения."
+        return True, "Настройки сохранены."
     except Exception as e:
         return False, f"Не удалось сохранить настройки: {e}"
 
@@ -230,7 +254,7 @@ WAKE_COMMAND_WINDOW = float(os.getenv("JARVIS_WAKE_COMMAND_WINDOW", "10.0"))
 
 PHRASE_TIME_LIMIT = float(os.getenv("JARVIS_PHRASE_TIME_LIMIT", "45.0"))
 
-FOLLOWUP_WINDOW = float(os.getenv("JARVIS_FOLLOWUP_WINDOW", "15.0"))
-FOLLOWUP_MODE = os.getenv("JARVIS_FOLLOWUP_MODE", "strict").lower()
-if FOLLOWUP_MODE not in {"strict", "normal", "off"}:
-    FOLLOWUP_MODE = "strict"
+FOLLOWUP_WINDOW = float(os.getenv("JARVIS_FOLLOWUP_WINDOW", "60.0"))
+FOLLOWUP_MODE = os.getenv("JARVIS_FOLLOWUP_MODE", "smart").lower()
+if FOLLOWUP_MODE not in {"smart", "strict", "normal", "off"}:
+    FOLLOWUP_MODE = "smart"

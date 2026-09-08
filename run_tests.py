@@ -19,6 +19,20 @@ SUITES = (
     "test_portability.py", "test_fileops.py", "test_project_agent.py",
     "test_audit_actions.py", "test_audit_fileops.py",
     "test_audit_integrations.py", "test_audit_pipeline.py",
+    "test_ui_redesign.py",
+    "test_request_routing.py",
+    "test_latency_ux.py",
+    "test_discovery_search.py",
+    "test_dialogue.py",
+    "test_agent_runtime.py",
+    "test_project_workflow.py",
+    "test_conversation.py",
+    "test_startup.py",
+    "test_live_settings.py",
+    "test_response.py",
+    "test_project_dialogue.py",
+    "test_project_selection.py",
+    "test_chat_memory.py",
 )
 
 
@@ -81,7 +95,7 @@ def main() -> int:
         destination = Path(temporary)
         files = {"jarvis.py", "project_agent.py", "overlay.py", "requirements.txt",
                  "health_check.py", "jarvis_config.example.json", ".gitignore",
-                 "pc_apps.txt", "ui/index.html", *SUITES}
+                 "pc_apps.txt", "ui/index.html", "ui/jarvis.css", "ui/jarvis.js", *SUITES}
         files.update(path.name for path in source.glob("jarvis_*.py"))
         for name in sorted(files):
             target = destination / name

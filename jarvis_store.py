@@ -12,6 +12,7 @@ import json
 import re
 import threading
 import time
+import uuid
 
 from jarvis_config import JARVIS_DIR
 
@@ -19,7 +20,7 @@ __all__ = [
     "MEMORY_FILE", "TODO_FILE",
     "load_memory", "save_memory", "remember", "recall",
     "load_todo", "save_todo", "todo_add", "todo_list", "todo_done",
-    "set_timer", "parse_timer_duration",
+    "set_timer", "parse_timer_duration", "timer_snapshot", "cancel_timer",
 ]
 
 
@@ -102,19 +103,59 @@ def todo_done(n: int) -> str:
         return f"Готово: {pending[n-1]['task']}"
     return "Такого пункта нет в списке."
 
-_active_timers: list = []
+_active_timers: dict = {}
+_timer_lock = threading.RLock()
 
 def set_timer(seconds: int, label: str = "", speak_fn=None):
-    """Fire a voice alarm after `seconds` seconds."""
+    """Cancellable session timer. Claim expiration atomically before speaking."""
+    seconds = int(seconds)
+    if seconds <= 0:
+        raise ValueError("Длительность таймера должна быть положительной")
+    timer_id = uuid.uuid4().hex
+    event = threading.Event()
+    with _timer_lock:
+        for key in list(_active_timers):
+            if len(_active_timers) >= 50 and _active_timers[key]["status"] != "running":
+                del _active_timers[key]
+        if len(_active_timers) >= 50:
+            raise ValueError("Одновременно доступно не более 50 таймеров")
+        _active_timers[timer_id] = {"id": timer_id, "label": label or "Таймер",
+                                    "deadline": time.monotonic() + seconds,
+                                    "due_at": time.time() + seconds,
+                                    "status": "running", "event": event}
+
     def _fire():
-        time.sleep(seconds)
+        if event.wait(seconds):
+            return
+        with _timer_lock:
+            if _active_timers[timer_id]["status"] != "running":
+                return
+            _active_timers[timer_id]["status"] = "completed"
         msg = f"Время вышло, сэр. {label}" if label else "Таймер сработал, сэр."
         print(f"[TIMER] {msg}")
         if speak_fn:
             speak_fn(msg)
     t = threading.Thread(target=_fire, daemon=True)
     t.start()
-    _active_timers.append(t)
+    return timer_id
+
+
+def timer_snapshot():
+    with _timer_lock:
+        return [{"id": item["id"], "label": item["label"], "status": item["status"],
+                 "due_at": item["due_at"],
+                 "remaining": max(0, item["deadline"] - time.monotonic())}
+                for item in reversed(list(_active_timers.values()))]
+
+
+def cancel_timer(timer_id):
+    with _timer_lock:
+        item = _active_timers.get(str(timer_id))
+        if not item or item["status"] != "running":
+            return False
+        item["status"] = "cancelled"
+        item["event"].set()
+        return True
 
 def parse_timer_duration(text: str) -> int | None:
     """Parse '10 минут', '30 секунд', '1 час' etc. Returns seconds or None."""

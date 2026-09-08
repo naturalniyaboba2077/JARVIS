@@ -87,6 +87,8 @@ def ob_write(title: str, content: str, tags: list[str] | None = None) -> str:
     try:
         fpath.write_text(full, encoding="utf-8")
         _invalidate_obsidian_cache()
+        from jarvis_dashboard import register_file
+        register_file(fpath, title="Заметка сохранена")
         return f"Заметка '{title}' сохранена в Obsidian."
     except Exception as e:
         return f"Ошибка записи в Obsidian: {e}"
@@ -110,6 +112,8 @@ def ob_append(title: str, text: str) -> str:
         try:
             fpath.write_text(new_content, encoding="utf-8")
             _invalidate_obsidian_cache()
+            from jarvis_dashboard import register_file
+            register_file(fpath, title="Заметка дополнена")
             return f"Добавлено в заметку '{title}'."
         except Exception as e:
             return f"Ошибка дозаписи: {e}"

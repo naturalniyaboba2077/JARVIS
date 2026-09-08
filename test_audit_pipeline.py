@@ -61,6 +61,8 @@ class PipelineCase(unittest.TestCase):
         self.llm._ollama_deltas = Mock(side_effect=AssertionError('No local network'))
         self.cloud_transport = self.llm._cloud_deltas
         self.llm._cloud_deltas = Mock(side_effect=AssertionError('No cloud network'))
+        self.lmstudio_transport = self.llm._lmstudio_deltas
+        self.llm._lmstudio_deltas = Mock(side_effect=AssertionError('No LM Studio network'))
 
     def capture_llm_workers(self):
         result = []
@@ -83,6 +85,23 @@ class PipelineCase(unittest.TestCase):
 
 
 class LLMTests(PipelineCase):
+    def test_lmstudio_routes_normal_and_code_models(self):
+        self.llm.LLM_ENGINE = 'lmstudio'
+        self.llm.LM_STUDIO_MODEL = 'normal-model'
+        self.llm.LM_STUDIO_CODE_MODEL = 'code-model'
+        self.llm._ollama_available = Mock(side_effect=AssertionError('LM Studio is primary'))
+        seen = []
+
+        def lmstudio(_messages, model=None, **_kwargs):
+            seen.append(model)
+            return iter([model])
+
+        self.llm._lmstudio_deltas = lmstudio
+        self.assertEqual(list(self.llm._llm_deltas([], prefer='local')), ['normal-model'])
+        self.assertEqual(list(self.llm._llm_deltas([], prefer='cloud')), ['code-model'])
+        self.assertEqual(seen, ['normal-model', 'code-model'])
+        self.llm._ollama_available.assert_not_called()
+
     def test_cloud_preference_never_waits_for_ollama_lock(self):
         self.llm._ollama_lock.acquire()
         self.addCleanup(self.llm._ollama_lock.release)
@@ -700,7 +719,7 @@ class TTSTests(PipelineCase):
                 yield {'type':'audio', 'data':b'no network'}
             finally:
                 closed.set()
-        self.tts.edge_tts = types.SimpleNamespace(Communicate=lambda *a: types.SimpleNamespace(stream=stream))
+        self.tts.edge_tts = types.SimpleNamespace(Communicate=lambda *a, **kw: types.SimpleNamespace(stream=stream))
         self.tts._TTS_NETWORK_TIMEOUT = .01
         started = time.perf_counter()
         self.assertIsNone(self.tts._edge_tts_to_bytes('text'))

@@ -33,10 +33,16 @@ dummy.JARVIS_DIR = Path(tempfile.gettempdir()) / "unused-audit-config"
 with patch.dict(sys.modules, {"jarvis_config": dummy}):
     fo = load("jarvis_fileops")
     safety = load("jarvis_safety")
-    with patch.dict(sys.modules, {"jarvis_fileops": fo}):
+    with patch.dict(sys.modules, {"jarvis_fileops": fo, "jarvis_safety": safety}):
         checks = load("jarvis_project_checks")
-        with patch.dict(sys.modules, {"jarvis_project_checks": checks}):
-            agent = load("project_agent")
+        with patch.dict(sys.modules, {"jarvis_state": load("jarvis_state")}):
+            paths = load("jarvis_paths")
+        with patch.dict(sys.modules, {"jarvis_project_checks": checks, "jarvis_safety": safety,
+                                      "jarvis_paths": paths,
+                                      "jarvis_response": load("jarvis_response"),
+                                      "jarvis_agent_context": load("jarvis_agent_context")}):
+            with patch.dict(sys.modules, {"jarvis_agent_evidence": load("jarvis_agent_evidence")}):
+                agent = load("project_agent")
 
 
 class AuditTests(unittest.TestCase):
@@ -472,17 +478,21 @@ class AuditTests(unittest.TestCase):
         self.assertFalse((self.root / "a.txt").exists())
         self.assertFalse((self.root / "history").exists())
 
-    def test_unsafe_commands_never_spawn(self):
-        commands = ["python -c \"print('ok')\"", "pytest", "python -m unittest",
-                    "Set-Content ../outside.txt changed", "git status", "git diff --check",
-                    "git -c color.ui=false reset --hard", "rm -rf .", "echo ok > out"]
-        with patch.object(subprocess, "Popen", side_effect=AssertionError("host subprocess")), \
-                patch.object(os, "system", side_effect=AssertionError("host shell")):
+    def test_allowed_command_uses_host_shell(self):
+        completed = types.SimpleNamespace(returncode=0, stdout="checked\n", stderr="")
+        with patch.object(agent.subprocess, "run", return_value=completed) as run:
+            result = agent._execute(self.root, "run_command", {"command": "git status"})
+        self.assertIn("exit=0", result)
+        self.assertIn("checked", result)
+        self.assertTrue(run.called)
+
+    def test_project_or_system_deletion_never_spawns(self):
+        commands = ["rm -rf .", "format C: /q", "bcdedit /delete {current}"]
+        with patch.object(agent.subprocess, "run", side_effect=AssertionError("host subprocess")):
             for command in commands:
                 with self.subTest(command=command):
                     result = agent._execute(self.root, "run_command", {"command": command})
                     self.assertIn("заблокирована", result)
-                    self.assertIn("backend", result)
 
     def test_compile_checks_syntax_without_execution_or_pyc(self):
         (self.root / "app.py").write_text("raise RuntimeError('must never run')\n", encoding="utf-8")

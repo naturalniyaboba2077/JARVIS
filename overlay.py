@@ -1,18 +1,11 @@
-# Полоски-визуализация голоса по краю экрана (отдельный процесс)
+"""Small, non-activating voice capsule above the primary monitor's taskbar.
 
-"""Screen-edge voice visualiser for J.A.R.V.I.S. — arc style.
-
-Concentric glowing arcs around all 4 screen edges (left, right, top, bottom),
-cyan→violet gradient. Innermost arcs light up first; outer arcs cascade in as
-the voice gets louder — giving a "wave radiating outward" effect.
-
-stdin protocol (JSON, one object per line):
-    {"amp": 0.0-1.0}    current voice loudness (0 = silence, 1 = peak)
-    {"show": true}      fade the overlay in
-    {"show": false}     fade the overlay out
-    {"quit": true}      exit cleanly
+stdin JSON lines: {"amp": 0..1, "show": true/false}, {"quit": true}.
+Only the UI thread touches Tk. Reader stores latest state (no event backlog).
+EOF stops the overlay even when the parent exits without a quit message.
 """
 import ctypes
+from ctypes import wintypes
 import json
 import math
 import sys
@@ -20,197 +13,116 @@ import threading
 import tkinter as tk
 
 CHROMA = "#010203"
-
-N_ARCS     = 16
-SPAN_FRAC  = 0.88
-MIN_DEPTH  = 14
-DEPTH_STEP = 18
-
-_DEPTHS = [MIN_DEPTH + DEPTH_STEP * i for i in range(N_ARCS)]
-
-_CORE = [
-    "#70e0ff", "#56d0ff", "#4ac0ff", "#40b0ff",
-    "#40a0ff", "#4a8eff", "#5a7eff", "#6a72ff",
-    "#7a68ff", "#8a64ff", "#9b6bff", "#9458ee",
-    "#8448dc", "#7038cc", "#5e28bc", "#4e18ac",
-]
+WIDTH, HEIGHT = 280, 64
 
 
-def _dim(c: str, f: float) -> str:
-    """Return colour `c` multiplied by factor `f` (0..1)."""
-    r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
-    return f"#{int(r*f):02x}{int(g*f):02x}{int(b*f):02x}"
+def amplitude(value):
+    try:
+        value = float(value)
+        return max(0.0, min(1.0, value)) if math.isfinite(value) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
-# окно с волной, реагирующей на громкость голоса
+def capsule_position(rect):
+    left, top, right, bottom = rect
+    return max(left, left + (right - left - WIDTH) // 2), max(top, bottom - HEIGHT - 16)
+
+
 class Overlay:
     def __init__(self):
         self.root = tk.Tk()
+        self.root.withdraw()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.0)
         self.root.attributes("-transparentcolor", CHROMA)
-
-        self.sw = self.root.winfo_screenwidth()
-        self.sh = self.root.winfo_screenheight()
-        self.root.geometry(f"{self.sw}x{self.sh}+0+0")
-
-        self.canvas = tk.Canvas(self.root, width=self.sw, height=self.sh,
+        self.root.attributes("-alpha", 0.96)
+        self.canvas = tk.Canvas(self.root, width=WIDTH, height=HEIGHT,
                                 bg=CHROMA, highlightthickness=0, bd=0)
         self.canvas.pack()
+        self._position()
+        self.root.update_idletasks()
         self._make_click_through()
-
-        self.amp = 0.0
-        self.cur = 0.0
-        self.vis = 0.0
-        self.want_vis = 0.0
-        self.phase = 0.0
-
-        self._arcs = []
-        self._build_arcs()
-        self.root.withdraw()
-
-        threading.Thread(target=self._read_stdin, daemon=True).start()
+        for box in ((2, 4, 58, 60), (222, 4, 278, 60)):
+            self.canvas.create_oval(*box, fill="#192229", outline="")
+        self.canvas.create_rectangle(30, 4, 250, 60, fill="#192229", outline="")
+        self.canvas.create_text(24, 23, text="JARVIS", anchor="w", fill="#e8edf0",
+                                font=("Segoe UI", 10, "bold"))
+        self.canvas.create_text(24, 43, text="Ответ — в окне приложения", anchor="w",
+                                fill="#a2aeb7", font=("Segoe UI", 8))
+        self.bars = [self.canvas.create_line(212+i*7, 21, 212+i*7, 25,
+                     fill="#8cc8e8", width=3, capstyle=tk.ROUND) for i in range(7)]
+        self.lock = threading.Lock()
+        self.want_show, self.shown, self.closed = False, False, False
+        self.amp, self.level = 0.0, 0.0
+        threading.Thread(target=self._read_stdin, name="overlay-input", daemon=True).start()
         self._tick()
 
+    def _position(self):
+        rect = (0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+        try:
+            area = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(area), 0):
+                rect = (area.left, area.top, area.right, area.bottom)
+        except (AttributeError, OSError):
+            pass
+        x, y = capsule_position(rect)
+        self.root.geometry(f"{WIDTH}x{HEIGHT}{x:+d}{y:+d}")
 
     def _make_click_through(self):
-        """Let all mouse input pass to whatever is underneath."""
-        GWL_EXSTYLE       = -20
-        WS_EX_LAYERED     = 0x00080000
-        WS_EX_TRANSPARENT = 0x00000020
-        WS_EX_TOOLWINDOW  = 0x00000080
-        WS_EX_NOACTIVATE  = 0x08000000
-        self.root.update_idletasks()
-        hwnd = (ctypes.windll.user32.GetParent(self.root.winfo_id())
-                or self.root.winfo_id())
-        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        ctypes.windll.user32.SetWindowLongW(
-            hwnd, GWL_EXSTYLE,
-            style | WS_EX_LAYERED | WS_EX_TRANSPARENT
-                  | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
-
-    def _build_arcs(self):
-        """Create all canvas arc items once.  The draw loop only updates their
-        line-width and visibility — no item recreation needed at 60 fps."""
-        w, h = self.sw, self.sh
-        cx, cy = w / 2, h / 2
-
-        hy = h * SPAN_FRAC / 2
-        hx = w * SPAN_FRAC / 2
-
-        for i, depth in enumerate(_DEPTHS):
-            cc = _CORE[i]
-            mc = _dim(cc, 0.50)
-            gc = _dim(cc, 0.14)
-
-            ph = i * 0.36
-
-            threshold = 0.03 + 0.40 * (i / (N_ARCS - 1))
-
-
-            lbb = (-depth, cy - hy, depth, cy + hy)
-            lg = self.canvas.create_arc(*lbb, start=-90, extent=180,
-                                        style=tk.ARC, outline=gc, width=18, state="hidden")
-            lm = self.canvas.create_arc(*lbb, start=-90, extent=180,
-                                        style=tk.ARC, outline=mc, width=7,  state="hidden")
-            lc = self.canvas.create_arc(*lbb, start=-90, extent=180,
-                                        style=tk.ARC, outline=cc, width=2,  state="hidden")
-
-            rbb = (w - depth, cy - hy, w + depth, cy + hy)
-            rg = self.canvas.create_arc(*rbb, start=90, extent=180,
-                                        style=tk.ARC, outline=gc, width=18, state="hidden")
-            rm = self.canvas.create_arc(*rbb, start=90, extent=180,
-                                        style=tk.ARC, outline=mc, width=7,  state="hidden")
-            rc = self.canvas.create_arc(*rbb, start=90, extent=180,
-                                        style=tk.ARC, outline=cc, width=2,  state="hidden")
-
-            tbb = (cx - hx, -depth, cx + hx, depth)
-            tg = self.canvas.create_arc(*tbb, start=0, extent=180,
-                                        style=tk.ARC, outline=gc, width=18, state="hidden")
-            tm = self.canvas.create_arc(*tbb, start=0, extent=180,
-                                        style=tk.ARC, outline=mc, width=7,  state="hidden")
-            tc = self.canvas.create_arc(*tbb, start=0, extent=180,
-                                        style=tk.ARC, outline=cc, width=2,  state="hidden")
-
-            bbb = (cx - hx, h - depth, cx + hx, h + depth)
-            bg = self.canvas.create_arc(*bbb, start=180, extent=180,
-                                        style=tk.ARC, outline=gc, width=18, state="hidden")
-            bm = self.canvas.create_arc(*bbb, start=180, extent=180,
-                                        style=tk.ARC, outline=mc, width=7,  state="hidden")
-            bc = self.canvas.create_arc(*bbb, start=180, extent=180,
-                                        style=tk.ARC, outline=cc, width=2,  state="hidden")
-
-            self._arcs.append({
-                "phase":     ph,
-                "threshold": threshold,
-                "haze":  (lg, rg, tg, bg),
-                "mid":   (lm, rm, tm, bm),
-                "core":  (lc, rc, tc, bc),
-            })
-
-
-    # читаем команды от Джарвиса из stdin
-    def _read_stdin(self):
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                continue
-            if msg.get("quit"):
-                try:
-                    self.root.after(0, self.root.destroy)
-                except Exception:
-                    pass
-                return
-            if "amp" in msg:
-                self.amp = max(0.0, min(1.0, float(msg["amp"])))
-            if "show" in msg:
-                self.want_vis = 1.0 if msg["show"] else 0.0
-
         try:
-            self.root.after(0, self.root.destroy)
-        except Exception:
+            user32 = ctypes.windll.user32
+            user32.GetParent.restype = wintypes.HWND
+            user32.GetParent.argtypes = [wintypes.HWND]
+            user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+            hwnd = user32.GetParent(self.root.winfo_id())
+            style = user32.GetWindowLongW(hwnd, -20)
+            user32.SetWindowLongW(hwnd, -20, style | 0x80000 | 0x20 | 0x80 | 0x08000000)
+        except (AttributeError, OSError):
             pass
 
+    def _read_stdin(self):
+        try:
+            for line in sys.stdin:
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                with self.lock:
+                    if msg.get("quit"):
+                        return
+                    if "amp" in msg:
+                        self.amp = amplitude(msg["amp"])
+                    if isinstance(msg.get("show"), bool):
+                        self.want_show = msg["show"]
+        finally:
+            with self.lock:
+                self.closed = True
+
     def _tick(self):
-        self.cur   += (self.amp      - self.cur)   * 0.28
-        self.vis   += (self.want_vis - self.vis)   * 0.12
-        self.phase += 0.07
-
-        if self.vis < 0.01 and self.want_vis == 0.0:
-            self.root.withdraw()
+        with self.lock:
+            closed, visible, amp = self.closed, self.want_show, self.amp
+        if closed:
+            self.root.destroy()
+            return
+        if visible != self.shown:
+            if visible:
+                self._position()
+                self.root.deiconify()
+            else:
+                self.root.withdraw()
+            self.shown = visible
+        if visible:
+            self.level += (amp - self.level) * 0.5
+            for i, weight in enumerate((0.5, 0.7, 0.9, 1.0, 0.9, 0.7, 0.5)):
+                half = 2 + 9 * self.level * weight
+                self.canvas.coords(self.bars[i], 212+i*7, 23-half, 212+i*7, 23+half)
         else:
-            self.root.deiconify()
-            self.root.attributes("-topmost", True)
-            self.root.attributes("-alpha", min(0.94 * self.vis, 0.94))
-            self._draw()
-
-        self.root.after(16, self._tick)
-
-    def _draw(self):
-        level = self.cur * self.vis
-        for arc in self._arcs:
-            raw = max(0.0, level - arc["threshold"])
-            wobble = 0.55 + 0.45 * math.sin(self.phase + arc["phase"])
-            eff = min(raw * wobble * 2.2, 1.0)
-
-            visible = eff > 0.008
-            state = "normal" if visible else "hidden"
-
-            hw = max(4,  min(22, int(20 * eff)))
-            mw = max(2,  min(10, int( 8 * eff)))
-            cw = max(1,  min(4,  int( 3 * eff)))
-
-            for it in arc["haze"]:
-                self.canvas.itemconfigure(it, state=state, width=hw)
-            for it in arc["mid"]:
-                self.canvas.itemconfigure(it, state=state, width=mw)
-            for it in arc["core"]:
-                self.canvas.itemconfigure(it, state=state, width=cw)
+            self.level = 0.0
+        self.root.after(33 if visible else 120, self._tick)
 
     def run(self):
         self.root.mainloop()

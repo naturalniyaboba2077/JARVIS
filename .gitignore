@@ -18,6 +18,7 @@ piper_models/
 *.onnx.json
 
 # ── Generated / runtime ──
+# logs/dialogues contains private TXT/JSONL conversation history; never force-add.
 logs/
 file_history/
 tts_cache/
@@ -53,4 +54,9 @@ voice_samples.py
 voice_samples/
 jarvis_sample.wav
 jarvis_config.json.bak
+jarvis_config.before-*.json
 .jarvis_config.json.*.tmp
+
+# Optional frontend test dependencies (not needed by the desktop runtime)
+node_modules/
+ui/previews/

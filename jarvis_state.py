@@ -20,6 +20,21 @@ import time
 
 pending_telegram_send = None
 pending_email_send = None
+pending_project_selection = None
+
+# Audio UI telemetry; never enumerate/open PortAudio from a UI worker.
+microphone_enabled = True
+assistant_ready = False
+microphone_ready = False
+microphone_error = ""
+microphone_generation = 0
+microphone_resumed_at = 0.0
+microphone_level = 0.0
+microphone_level_at = 0.0
+microphone_lock = threading.RLock()
+playback_level = 0.0
+playback_level_available = False
+playback_level_at = 0.0
 
 
 # Метрики последнего цикла «услышал — подумал — ответил». Пишет их тот модуль,
@@ -27,6 +42,8 @@ pending_email_send = None
 last_stt_ms = 0.0
 last_llm_ttft_ms = 0.0
 last_tts_ms = 0.0
+response_started_at = 0.0
+last_audio_start_ms = 0.0
 
 # Сколько раз за сессию движок вернул пустой ответ и пришлось откатываться.
 llm_empty_failovers = 0
@@ -45,9 +62,13 @@ threshold_before_speech = None
 
 # Последняя произнесённая фраза — по ней отсеивается эхо своего же голоса.
 last_spoken_text = ""
+last_response_text = ""
+last_user_command = ""
+speech_finished_at = 0.0
 
 # До какого момента команда принимается без слова «Джарвис».
 wake_active_until = 0.0
+wake_window_kind = "followup"  # 'address' after a wake-only phrase or hotkey
 
 
 class InterruptEvent(threading.Event):

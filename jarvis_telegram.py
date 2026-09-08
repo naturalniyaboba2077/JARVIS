@@ -55,18 +55,19 @@ TELEGRAM_DATA_DIR = JARVIS_DIR / "telegram_data"
 TELEGRAM_SESSION_BASE = TELEGRAM_DATA_DIR / "jarvis_user"
 TELEGRAM_EXPORT_DIR = Path.home() / "Documents" / "Jarvis Telegram Exports"
 _telegram_lock = threading.Lock()
-_telegram_pending_lock = threading.Lock()
+import jarvis_confirm as _confirm
+
+_telegram_pending_lock = _confirm.LOCK
 _telegram_phone_code_hash = None
 _telegram_phone_lookup_after = 0.0
-_TELEGRAM_CONFIRM_YES = frozenset({
-    "да", "отправь", "подтверждаю", "отправляй", "разрешаю", "выполняй",
-})
-_TELEGRAM_CONFIRM_NO = frozenset({"нет", "отмена", "отмени", "не отправляй", "стоп"})
+_TELEGRAM_CONFIRM_YES = _confirm.YES  # compatibility for existing voice callers
+_TELEGRAM_CONFIRM_NO = _confirm.NO
 
 
 def _telegram_config() -> tuple[int | None, str, str]:
     """Read current panel values without requiring a Jarvis restart."""
-    cfg = _read_config_file()
+    from jarvis_settings import settings
+    cfg = os.environ if settings.enabled else _read_config_file()
     raw_id = str(cfg.get("TELEGRAM_API_ID") or os.getenv("TELEGRAM_API_ID") or "").strip()
     api_hash = str(cfg.get("TELEGRAM_API_HASH") or os.getenv("TELEGRAM_API_HASH") or "").strip()
     phone = str(cfg.get("TELEGRAM_PHONE") or os.getenv("TELEGRAM_PHONE") or "").strip()
@@ -88,6 +89,10 @@ def _telegram_preflight(require_phone: bool = False) -> tuple[bool, str]:
     return True, ""
 
 
+from jarvis_settings import activity as _settings_activity
+
+
+@_settings_activity
 def _telegram_sync(coro_factory):
     """Run one serialized Telethon operation in a Windows-safe event loop."""
     with _telegram_lock:
@@ -452,35 +457,35 @@ def telegram_send_message(chat: str, text: str) -> str:
 def telegram_request_send(chat: str, text: str) -> str:
     chat = (chat or "").strip()
     text = (text or "").strip()
-    with _telegram_pending_lock:
-        # A failed replacement must not leave an older message awaiting a 'yes'.
-        _state.pending_telegram_send = None
-        _state.pending_email_send = None
-        if not chat or not text:
-            return "Нужно указать чат и текст сообщения, сэр."
-        target = _telegram_authorized_operation(
-            "выбор получателя", lambda client: _telegram_resolve_send_target(client, chat))
-        if isinstance(target, str):
-            return target
-        _state.pending_telegram_send = {**target, "text": text}
-        preview = text if len(text) <= 140 else text[:140] + "…"
-        return (f"Подтвердите отправку в Telegram, сэр. Чат «{target['chat']}», "
-                f"сообщение: {preview}. Скажите «подтверждаю» или «отмена».")
+    revision = _confirm.clear()
+    if not chat or not text:
+        return "Нужно указать чат и текст сообщения, сэр."
+    # Do not block cancellation/UI snapshots on recipient network resolution.
+    target = _telegram_authorized_operation(
+        "выбор получателя", lambda client: _telegram_resolve_send_target(client, chat))
+    if isinstance(target, str):
+        return target
+    request_id = _confirm.stage("telegram", {**target, "text": text}, expected_revision=revision)
+    if request_id is None:
+        return "Подготовка сообщения отменена или заменена новым запросом."
+    preview = text if len(text) <= 140 else text[:140] + "…"
+    return (f"Подтвердите отправку в Telegram, сэр. Чат «{target['chat']}», "
+            f"сообщение: {preview}. Скажите «подтверждаю» или «отмена».")
 
 
-def telegram_confirm_pending(text: str) -> str | None:
-    with _telegram_pending_lock:
-        if _state.pending_telegram_send is None:
-            return None
-        answer = re.sub(r'\s+', ' ', (text or '').strip().lower()).strip(' .,!?:;')
-        if answer in _TELEGRAM_CONFIRM_NO:
-            _state.pending_telegram_send = None
-            return "Отправка сообщения отменена, сэр."
-        if answer not in _TELEGRAM_CONFIRM_YES:
-            return "Ожидаю подтверждения отправки Telegram: скажите «подтверждаю» или «отмена»."
-        payload = _state.pending_telegram_send
-        _state.pending_telegram_send = None
-    return _telegram_send_resolved(payload)
+def telegram_confirm_pending(text: str, request_id=None) -> str | None:
+    outcome, payload = _confirm.consume("telegram", text, request_id)
+    if outcome == "none":
+        return None
+    if outcome == "stale":
+        return "Это подтверждение больше не действует. Проверьте текущую карточку сообщения."
+    if outcome == "expired":
+        return "Срок подтверждения сообщения истёк. Заново запросите отправку."
+    if outcome == "cancelled":
+        return "Отправка сообщения отменена, сэр."
+    if outcome == "confirmed":
+        return _telegram_send_resolved(payload)
+    return "Ожидаю подтверждения отправки Telegram: скажите «подтверждаю» или «отмена»."
 
 
 def normalize_phone_number(raw: str) -> str | None:

@@ -421,8 +421,8 @@ check("сложные запросы → облако (DeepSeek)", not _mis_comp
 check("_llm_deltas принимает prefer", "prefer" in __import__("inspect").signature(jarvis_llm._llm_deltas).parameters)
 check("_cloud_deltas принимает max_tokens",
       "max_tokens" in __import__("inspect").signature(jarvis_llm._cloud_deltas).parameters)
-check("облачный дедлайн щедрее локального (не бросать сильную модель на 1.5с)",
-      jarvis_llm.LLM_DEADLINE_CLOUD > jarvis_llm.LLM_DEADLINE)
+check("первый токен: локальный дедлайн допускает холодную загрузку, облачный независим",
+      25 <= jarvis_llm.LLM_DEADLINE <= 60 and 1 <= jarvis_llm.LLM_DEADLINE_CLOUD <= 30)
 
 _order = []
 def _spy_pump(engine, messages):
@@ -480,8 +480,8 @@ try:
     _spoken.clear()
     ret = jarvis.process_with_llm_streaming("расскажи что-нибудь")
     check("оба движка пусты → Джарвис ГОВОРИТ (не тишина)", len(_spoken) >= 1, f"_spoken={_spoken}")
-    check("фраза fallback = 'Не удалось получить ответ, сэр.'",
-          any("Не удалось получить ответ" in s for s in _spoken), _spoken)
+    check("fallback сообщает причину отказа моделей",
+          any("Модели не дали ответа" in s and "пустой ответ" in s for s in _spoken), _spoken)
     check("process_with_llm_streaming возвращает текст, а не пусто", bool(ret), repr(ret))
 
     def _err_json_stream(m, **kw):
@@ -607,7 +607,7 @@ check("длинная фраза не режется старым лимитом
 check("background listener использует настраиваемый лимит фразы",
       "phrase_time_limit=PHRASE_TIME_LIMIT" in src)
 _wake_branch_start = src.index('if command == "__WAKE__":')
-_wake_branch_end = src.index('if command.strip().lower() in ["выход"', _wake_branch_start)
+_wake_branch_end = src.index('                    continue', _wake_branch_start)
 _wake_branch = src[_wake_branch_start:_wake_branch_end]
 check("отдельный wake-word больше не вызывает TTS поверх вопроса",
       "speak(" not in _wake_branch)
@@ -642,7 +642,7 @@ try:
     check("запомни идёт локально",
           jarvis.handle_local_productivity_command("запомни мой цвет синий") == "Запомнил, сэр.")
     check("чтение памяти идёт локально",
-          jarvis.handle_local_productivity_command("что ты помнишь") == "MEMORY")
+          str(jarvis.handle_local_productivity_command("что ты помнишь")).startswith("MEMORY"))
     check("добавление задачи идёт локально",
           jarvis.handle_local_productivity_command("добавь задачу купить молоко") == "ADD:купить молоко")
     check("завершение задачи идёт локально",
@@ -706,7 +706,8 @@ finally:
 
 
 section("BUG 18: UI не исполняет HTML из речи или ответа LLM")
-_ui_src = (jarvis.JARVIS_DIR / "ui" / "index.html").read_text(encoding="utf-8")
+_ui_src = "\n".join((jarvis.JARVIS_DIR / "ui" / name).read_text(encoding="utf-8")
+                    for name in ("index.html", "jarvis.js", "jarvis.css"))
 check("журнал диалога не использует innerHTML", "d.innerHTML" not in _ui_src)
 check("текст сообщения вставляется безопасным текстовым узлом",
       "document.createTextNode(String(text))" in _ui_src)
@@ -783,7 +784,8 @@ check("настройки тембра Piper доступны в UI",
       'data-key="PIPER_NOISE_SCALE"' in _ui_src)
 
 check("панель настроек не вставляет микрофоны через innerHTML", "s.innerHTML" not in _ui_src)
-check("панель вызывает безопасный API сохранения", "a.save_settings(collectSettings())" in _ui_src)
+check("панель вызывает безопасный API сохранения", "var submitted = collectSettings();" in _ui_src
+      and "a.save_settings(submitted)" in _ui_src)
 check("API-ключ не возвращается в UI", "OPENROUTER_API_KEY_SET" in src)
 check("версия приложения задана", jarvis.APP_VERSION.startswith("1."),
       f"APP_VERSION={jarvis.APP_VERSION}")
@@ -825,11 +827,11 @@ check("UI подключается после запуска фонового с
 overlay_src = Path("overlay.py").read_text(encoding="utf-8")
 check("overlay завершается при EOF родительского процесса",
       'for line in sys.stdin:' in overlay_src and
-      'self.root.after(0, self.root.destroy)' in overlay_src)
+      'self.closed = True' in overlay_src and 'self.root.destroy()' in overlay_src)
 
-ui_src = Path("ui/index.html").read_text(encoding="utf-8")
+ui_src = _ui_src
 check("drag-зона не перекрывает кнопки заголовка",
-      '.titlebar .grip{position:absolute; left:0; top:0; bottom:0; right:174px;}' in ui_src)
+      '.titlebar .grip { position: absolute; inset: 0 174px 0 0; }' in ui_src)
 
 
 section("BUG 19: гипотетический вопрос не выполняется + Telegram integration")
@@ -900,7 +902,7 @@ for _tok in ["джарез", "джаммитс", "джанес", "жарвес",
     check(f"ловит искажение имени: {_tok!r}", jarvis.contains_wake_word(_tok))
 check("реальный промах из логов: 'Джарез. Включи музыку.'",
       jarvis.contains_wake_word("Джарез. Включи музыку.") and
-      "включи музыку" in jarvis.strip_wake_word("Джарез. Включи музыку."))
+      jarvis.strip_wake_word("Джарез. Включи музыку.") == "Включи музыку.")
 check("реальный промах из логов: 'Джаммитс, открой Spotify'",
       jarvis.contains_wake_word("Джаммитс, открой Spotify"))
 
@@ -1036,8 +1038,9 @@ with tempfile.TemporaryDirectory(prefix="jarvis-regression-agent-") as _director
     (_root / "app.py").write_text("raise RuntimeError('must not execute')", encoding="utf-8")
     check("агенту запрещено рекурсивное удаление",
           "заблокирована" in project_agent._execute(_root, "run_command", {"command": "rm -rf ."}))
-    check("проверки агента не требуют Windows или shell",
-          "exit=0" in project_agent._execute(_root, "run_command", {"command": "compile app.py"}))
+    check("агент выполняет разрешённую команду",
+          "exit=0" in project_agent._execute(
+              _root, "run_command", {"command": "python -c \"print('ok')\""}))
 check("история правок не уходит в гит",
       "file_history/" in Path(".gitignore").read_text(encoding="utf-8"))
 

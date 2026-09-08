@@ -1,0 +1,4 @@
+{%- macro format_type_argument(value) -%}
+{%- if value is string -%}{{- '<|"|>' + (value | upper) + '<|"|>' -}}
+{%- else -%}[{%- for item in value -%}{{- '<|"|>' + (item | upper) + '<|"|>' -}}{%- if not loop.last -%},{%- endif -%}{%- endfor -%}]{%- endif -%}
+{%- endmacro -%}
